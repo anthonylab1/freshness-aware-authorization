@@ -1,0 +1,63 @@
+name: CI RCI-EXP-001
+
+# Ejecuta las suites Python y Rego con versiones fijas de Python y OPA.
+# La prueba integral Python+OPA se ejecuta con OPA REAL y NO puede quedar omitida.
+# Sin despliegue, publicación de paquetes ni contenedores.
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  # Versión fija de OPA. Súbela conscientemente; el checksum se verifica contra
+  # el fichero .sha256 publicado en la misma release oficial.
+  OPA_VERSION: "1.4.0"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Configurar Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Instalar OPA (versión fija + verificación de checksum publicado)
+        run: |
+          set -euo pipefail
+          base="https://openpolicyagent.org/downloads/v${OPA_VERSION}"
+          curl -fsSL "${base}/opa_linux_amd64_static" -o opa
+          curl -fsSL "${base}/opa_linux_amd64_static.sha256" -o opa.sha256
+          # El .sha256 publicado puede referir al nombre remoto; normalizamos a ./opa.
+          echo "$(awk '{print $1}' opa.sha256)  opa" | sha256sum -c -
+          chmod +x opa
+          sudo mv opa /usr/local/bin/opa
+          opa version
+
+      - name: Pruebas Python (incluye integración real con OPA)
+        run: |
+          set -euo pipefail
+          # OPA ya está en el PATH: la prueba integral NO debe omitirse.
+          python -m unittest -v 2>&1 | tee unittest.log
+          if grep -Eq "TestIntegracionOpaReal.*(skipped| \.\.\. skipped)" unittest.log; then
+            echo "ERROR: la prueba integral con OPA real quedó omitida."; exit 1
+          fi
+
+      - name: Rego — formato canónico
+        run: opa fmt --fail policy.rego policy_test.rego
+
+      - name: Rego — comprobación estricta
+        run: opa check --strict policy.rego policy_test.rego
+
+      - name: Rego — tests con cobertura
+        run: opa test policy.rego policy_test.rego --coverage
