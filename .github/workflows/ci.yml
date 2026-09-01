@@ -1,8 +1,8 @@
 name: CI RCI-EXP-001
 
-# Ejecuta las suites Python y Rego con versiones fijas de Python y OPA.
-# La prueba integral Python+OPA se ejecuta con OPA REAL y NO puede quedar omitida.
-# Sin despliegue, publicación de paquetes ni contenedores.
+# Runs the Python and Rego suites with pinned Python and OPA versions.
+# The end-to-end Python+OPA test runs against REAL OPA and MUST NOT be skipped.
+# No deployment, package publishing or containers.
 
 on:
   push:
@@ -15,8 +15,8 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.11"
-  # Versión fija de OPA. Súbela conscientemente; el checksum se verifica contra
-  # el fichero .sha256 publicado en la misma release oficial.
+  # Pinned OPA version. Bump it deliberately; the checksum is verified against
+  # the .sha256 file published in the same official release.
   OPA_VERSION: "1.4.0"
 
 jobs:
@@ -27,37 +27,37 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Configurar Python
+      - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Instalar OPA (versión fija + verificación de checksum publicado)
+      - name: Install OPA (pinned version + published checksum verification)
         run: |
           set -euo pipefail
           base="https://openpolicyagent.org/downloads/v${OPA_VERSION}"
           curl -fsSL "${base}/opa_linux_amd64_static" -o opa
           curl -fsSL "${base}/opa_linux_amd64_static.sha256" -o opa.sha256
-          # El .sha256 publicado puede referir al nombre remoto; normalizamos a ./opa.
+          # The published .sha256 may reference the remote name; normalise to ./opa.
           echo "$(awk '{print $1}' opa.sha256)  opa" | sha256sum -c -
           chmod +x opa
           sudo mv opa /usr/local/bin/opa
           opa version
 
-      - name: Pruebas Python (incluye integración real con OPA)
+      - name: Python tests (includes real OPA integration)
         run: |
           set -euo pipefail
-          # OPA ya está en el PATH: la prueba integral NO debe omitirse.
+          # OPA is already on PATH: the end-to-end test MUST NOT be skipped.
           python -m unittest -v 2>&1 | tee unittest.log
-          if grep -Eq "TestIntegracionOpaReal.*(skipped| \.\.\. skipped)" unittest.log; then
-            echo "ERROR: la prueba integral con OPA real quedó omitida."; exit 1
+          if grep -Eq "TestRealOpaIntegration.*(skipped| \.\.\. skipped)" unittest.log; then
+            echo "ERROR: the end-to-end test with real OPA was skipped."; exit 1
           fi
 
-      - name: Rego — formato canónico
+      - name: Rego — canonical format
         run: opa fmt --fail policy.rego policy_test.rego
 
-      - name: Rego — comprobación estricta
+      - name: Rego — strict check
         run: opa check --strict policy.rego policy_test.rego
 
-      - name: Rego — tests con cobertura
+      - name: Rego — tests with coverage
         run: opa test policy.rego policy_test.rego --coverage
