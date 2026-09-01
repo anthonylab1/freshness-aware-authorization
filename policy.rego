@@ -375,14 +375,14 @@ _verr contains "exception.source_timestamp: is in the future (> now)" if {
 	_exception_age_seconds < 0
 }
 
-_verr contains "exception consistency: source_status=FRESH but age > fuente_max_age" if {
+_verr contains "exception consistency: source_status=FRESH but age > source_max_age" if {
 	_has_exception
 	object.get(input.exception, ["source_status"], null) == "FRESH"
 	is_number(object.get(input.exception, ["source_max_age_seconds"], null))
 	_exception_age_seconds > input.exception.source_max_age_seconds
 }
 
-_verr contains "exception consistency: source_status=STALE but age <= fuente_max_age" if {
+_verr contains "exception consistency: source_status=STALE but age <= source_max_age" if {
 	_has_exception
 	object.get(input.exception, ["source_status"], null) == "STALE"
 	is_number(object.get(input.exception, ["source_max_age_seconds"], null))
