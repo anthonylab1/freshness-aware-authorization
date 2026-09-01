@@ -15,14 +15,14 @@ from unittest import mock
 import integracion_rci as ri
 from integracion_rci import (
     Decision,
-    DecisionRequiereTratamientoExplicito,
-    ErrorDeEvaluacion,
-    OPANoDisponible,
-    acceso_permitido,
-    crear_registro_auditoria,
-    evaluar,
-    obtener_decision,
-    sha256_politica,
+    DecisionRequiresExplicitHandling,
+    EvaluationError,
+    OPAUnavailable,
+    access_allowed,
+    build_audit_record,
+    evaluate,
+    get_decision,
+    policy_sha256,
 )
 
 
@@ -73,62 +73,62 @@ def _opa_json(value):
 
 
 # ===========================================================================
-# _validar_resultado: coherencia interna (sin entrada)
+# _validate_result: coherencia interna (sin entrada)
 # ===========================================================================
 class TestValidarResultado(unittest.TestCase):
     def v(self, valor):
-        return ri._validar_resultado(valor)
+        return ri._validate_result(valor)
 
     def test_valido_ok(self):
         self.assertEqual(self.v(resultado_valido())["decision"], "ALLOW")
 
     def test_no_dict_falla(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(["no", "dict"])
 
     def test_falta_campo_obligatorio(self):
-        for campo in ri._CAMPOS_CONTRACTUALES:
+        for campo in ri._CONTRACT_FIELDS:
             with self.subTest(campo=campo):
                 r = resultado_valido()
                 del r[campo]
-                with self.assertRaises(ErrorDeEvaluacion):
+                with self.assertRaises(EvaluationError):
                     self.v(r)
 
     def test_combinacion_invalida(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(reason_code="RCI_DENY_UNIT_MISMATCH"))  # ALLOW + code DENY
 
     def test_execution_allowed_string(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(execution_allowed="false"))
 
     def test_tipos_no_hashables_no_typeerror(self):
         for campo, val in [("decision", []), ("decision", {}), ("reason_code", []),
                            ("reason_code", {}), ("asignacion_status", []), ("asignacion_status", {})]:
             with self.subTest(campo=campo, val=type(val).__name__):
-                with self.assertRaises(ErrorDeEvaluacion):
+                with self.assertRaises(EvaluationError):
                     self.v(resultado_valido(**{campo: val}))
 
     def test_version_incorrecta(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(policy_version="2.3.1"))
 
     def test_regla_incorrecta(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(regla="OTRA"))
 
     def test_validation_errors_no_string(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(decision="DENY", reason_code="RCI_DENY_INVALID_INPUT",
                                     execution_allowed=False, validation_errors=["ok", 5]))
 
     def test_invalid_input_sin_errores(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(decision="DENY", reason_code="RCI_DENY_INVALID_INPUT",
                                     execution_allowed=False, validation_errors=[]))
 
     def test_validation_errors_desordenados_fallan(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(decision="DENY", reason_code="RCI_DENY_INVALID_INPUT",
                                     execution_allowed=False, validation_errors=["z", "a"],
                                     actor_id=None, expediente_id=None, asignacion_status=None,
@@ -137,7 +137,7 @@ class TestValidarResultado(unittest.TestCase):
     def test_allow_con_estado_incoherente(self):
         for estado in ("STALE", "UNAVAILABLE", None):
             with self.subTest(estado=estado):
-                with self.assertRaises(ErrorDeEvaluacion):
+                with self.assertRaises(EvaluationError):
                     self.v(resultado_valido(asignacion_status=estado))
 
     def test_action_not_allowed_valido(self):
@@ -146,12 +146,12 @@ class TestValidarResultado(unittest.TestCase):
         self.assertEqual(r["reason_code"], "RCI_DENY_ACTION_NOT_ALLOWED")
 
     def test_source_unavailable_exige_unavailable(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(decision="DENY", reason_code="RCI_DENY_SOURCE_UNAVAILABLE",
                                     execution_allowed=False, asignacion_status="FRESH"))
 
     def test_escalate_exige_stale(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(decision="ESCALATE", reason_code="RCI_ESCALATE_STALE_ASSIGNMENT",
                                     execution_allowed=False, asignacion_status="FRESH"))
 
@@ -159,28 +159,28 @@ class TestValidarResultado(unittest.TestCase):
         for campo in ("actor_id", "expediente_id", "evaluated_at"):
             for val in (None, ""):
                 with self.subTest(campo=campo, val=val):
-                    with self.assertRaises(ErrorDeEvaluacion):
+                    with self.assertRaises(EvaluationError):
                         self.v(resultado_valido(**{campo: val}))
 
     def test_evaluated_at_no_rfc3339_en_negocio_falla(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(evaluated_at="ayer"))
 
     def test_evaluated_at_segundo_60_falla(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(evaluated_at="2026-06-28T10:15:60Z"))
 
     def test_evaluated_at_con_salto_linea_falla_controladamente(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(evaluated_at="2026-06-28T10:15:00Z\n"))
 
     def test_allow_with_exception_sin_id_falla(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(decision="ALLOW_WITH_EXCEPTION",
                                     reason_code="RCI_ALLOW_EXCEPTION_APPLIED", excepcion_id_aplicada=None))
 
     def test_id_excepcion_en_allow_falla(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(excepcion_id_aplicada="exc-1"))
 
     def test_seis_mas_una_combinaciones_validas(self):
@@ -201,37 +201,37 @@ class TestValidarResultado(unittest.TestCase):
 
 
 # ===========================================================================
-# Vínculo resultado <-> petición
+# Vínculo result <-> petición
 # ===========================================================================
 class TestEcos(unittest.TestCase):
-    def v(self, resultado, entrada):
-        return ri._validar_resultado(resultado, entrada)
+    def v(self, result, entrada):
+        return ri._validate_result(result, entrada)
 
     def test_ecos_correctos_ok(self):
         self.v(resultado_valido(), entrada_valida())
 
     def test_actor_incorrecto(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(actor_id="OTRO"), entrada_valida())
 
     def test_expediente_incorrecto(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(expediente_id="OTRO"), entrada_valida())
 
     def test_estado_incorrecto(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(asignacion_status="STALE"),
                    entrada_valida(resource={**entrada_valida()["resource"], "asignacion_status": "FRESH"}))
 
     def test_evaluated_at_incorrecto(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(resultado_valido(evaluated_at="2026-06-28T09:00:00Z"), entrada_valida())
 
     def test_id_excepcion_incorrecto(self):
         ent = entrada_valida(excepcion={"id": "exc-REAL"})
         res = resultado_valido(decision="ALLOW_WITH_EXCEPTION", reason_code="RCI_ALLOW_EXCEPTION_APPLIED",
                                excepcion_id_aplicada="exc-FALSO")
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self.v(res, ent)
 
     def test_invalid_input_ecos_saneados_ok(self):
@@ -251,28 +251,28 @@ class TestEcos(unittest.TestCase):
 
 
 # ===========================================================================
-# obtener_decision / acceso_permitido
+# get_decision / access_allowed
 # ===========================================================================
 class TestDecision(unittest.TestCase):
     def test_obtener_decision(self):
-        self.assertIs(obtener_decision(resultado_valido()), Decision.ALLOW)
+        self.assertIs(get_decision(resultado_valido()), Decision.ALLOW)
 
     def test_acceso_allow_true(self):
-        self.assertIs(acceso_permitido(resultado_valido()), True)
+        self.assertIs(access_allowed(resultado_valido()), True)
 
     def test_acceso_deny_false(self):
         r = resultado_valido(decision="DENY", reason_code="RCI_DENY_UNIT_MISMATCH", execution_allowed=False)
-        self.assertIs(acceso_permitido(r), False)
+        self.assertIs(access_allowed(r), False)
 
     def test_acceso_action_not_allowed_false(self):
         r = resultado_valido(decision="DENY", reason_code="RCI_DENY_ACTION_NOT_ALLOWED", execution_allowed=False)
-        self.assertIs(acceso_permitido(r), False)
+        self.assertIs(access_allowed(r), False)
 
     def test_allow_with_exception_lanza(self):
         r = resultado_valido(decision="ALLOW_WITH_EXCEPTION", reason_code="RCI_ALLOW_EXCEPTION_APPLIED",
                              excepcion_id_aplicada="exc-9", asignacion_status="STALE")
-        with self.assertRaises(DecisionRequiereTratamientoExplicito) as ctx:
-            acceso_permitido(r)
+        with self.assertRaises(DecisionRequiresExplicitHandling) as ctx:
+            access_allowed(r)
         self.assertEqual(ctx.exception.decision, "ALLOW_WITH_EXCEPTION")
         self.assertEqual(ctx.exception.reason_code, "RCI_ALLOW_EXCEPTION_APPLIED")
         self.assertEqual(ctx.exception.excepcion_id_aplicada, "exc-9")
@@ -280,14 +280,14 @@ class TestDecision(unittest.TestCase):
     def test_escalate_lanza(self):
         r = resultado_valido(decision="ESCALATE", reason_code="RCI_ESCALATE_STALE_ASSIGNMENT",
                              execution_allowed=False, asignacion_status="STALE")
-        with self.assertRaises(DecisionRequiereTratamientoExplicito) as ctx:
-            acceso_permitido(r)
+        with self.assertRaises(DecisionRequiresExplicitHandling) as ctx:
+            access_allowed(r)
         self.assertEqual(ctx.exception.decision, "ESCALATE")
         self.assertIsNone(ctx.exception.excepcion_id_aplicada)
 
     def test_acceso_incompleto_lanza_error(self):
-        with self.assertRaises(ErrorDeEvaluacion):
-            acceso_permitido({"execution_allowed": True})
+        with self.assertRaises(EvaluationError):
+            access_allowed({"execution_allowed": True})
 
 
 # ===========================================================================
@@ -295,23 +295,23 @@ class TestDecision(unittest.TestCase):
 # ===========================================================================
 class TestSerializacion(unittest.TestCase):
     def test_dict_ok(self):
-        self.assertIn('"a"', ri._serializar_entrada({"a": 1}))
+        self.assertIn('"a"', ri._serialise_input({"a": 1}))
 
     def test_raiz_no_dict(self):
         for raiz in (None, [1, 2], "texto", 42, 3.5, True):
             with self.subTest(raiz=type(raiz).__name__):
-                with self.assertRaises(ErrorDeEvaluacion):
-                    ri._serializar_entrada(raiz)
+                with self.assertRaises(EvaluationError):
+                    ri._serialise_input(raiz)
 
     def test_nan_infinitos(self):
         for val in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(val=val):
-                with self.assertRaises(ErrorDeEvaluacion):
-                    ri._serializar_entrada({"x": val})
+                with self.assertRaises(EvaluationError):
+                    ri._serialise_input({"x": val})
 
     def test_objeto_no_serializable(self):
-        with self.assertRaises(ErrorDeEvaluacion):
-            ri._serializar_entrada({"x": object()})
+        with self.assertRaises(EvaluationError):
+            ri._serialise_input({"x": object()})
 
 
 # ===========================================================================
@@ -320,17 +320,17 @@ class TestSerializacion(unittest.TestCase):
 class TestTimeout(unittest.TestCase):
     def test_validos(self):
         for t in (0.1, 1, 5.0, 30):
-            ri._validar_timeout(t)  # no lanza
+            ri._validate_timeout(t)  # no lanza
 
     def test_invalidos(self):
         for t in (0, -1, -0.5, True, False, "5", float("nan"), float("inf")):
             with self.subTest(t=repr(t)):
-                with self.assertRaises(ErrorDeEvaluacion):
-                    ri._validar_timeout(t)
+                with self.assertRaises(EvaluationError):
+                    ri._validate_timeout(t)
 
     def test_evaluar_rechaza_timeout_invalido_antes_de_opa(self):
-        with self.assertRaises(ErrorDeEvaluacion):
-            evaluar(entrada_valida(), timeout=0)
+        with self.assertRaises(EvaluationError):
+            evaluate(entrada_valida(), timeout=0)
 
 
 # ===========================================================================
@@ -339,20 +339,20 @@ class TestTimeout(unittest.TestCase):
 class TestOpaResolucion(unittest.TestCase):
     def test_no_en_path(self):
         with mock.patch.object(ri.shutil, "which", return_value=None):
-            with self.assertRaises(OPANoDisponible):
-                ri._resolver_opa(None)
+            with self.assertRaises(OPAUnavailable):
+                ri._resolve_opa(None)
 
     def test_inexistente(self):
-        with self.assertRaises(OPANoDisponible):
-            ri._resolver_opa("/no/existe/opa_zzz")
+        with self.assertRaises(OPAUnavailable):
+            ri._resolve_opa("/no/existe/opa_zzz")
 
     def test_no_ejecutable(self):
         with tempfile.NamedTemporaryFile(suffix="opa", delete=False) as f:
             ruta = f.name
         os.chmod(ruta, 0o644)
         try:
-            with self.assertRaises(OPANoDisponible):
-                ri._resolver_opa(ruta)
+            with self.assertRaises(OPAUnavailable):
+                ri._resolve_opa(ruta)
         finally:
             os.unlink(ruta)
 
@@ -361,14 +361,14 @@ class TestOpaResolucion(unittest.TestCase):
             ruta = f.name
         os.chmod(ruta, 0o755)
         try:
-            resuelta = ri._resolver_opa(ruta)
+            resuelta = ri._resolve_opa(ruta)
             self.assertTrue(os.path.isabs(resuelta))
         finally:
             os.unlink(ruta)
 
 
 # ===========================================================================
-# evaluar(): camino completo con mocks
+# evaluate(): camino completo con mocks
 # ===========================================================================
 class TestEvaluar(unittest.TestCase):
     def setUp(self):
@@ -382,9 +382,9 @@ class TestEvaluar(unittest.TestCase):
 
     def _evaluar(self, valor_opa, entrada=None, **kw):
         entrada = entrada if entrada is not None else entrada_valida()
-        with mock.patch.object(ri, "_resolver_opa", return_value="/opa"), \
+        with mock.patch.object(ri, "_resolve_opa", return_value="/opa"), \
              mock.patch.object(ri, "_run_opa", return_value=valor_opa):
-            return evaluar(entrada, policy_path=self.policy, permitir_politica_personalizada=True, **kw)
+            return evaluate(entrada, policy_path=self.policy, allow_custom_policy=True, **kw)
 
     def test_allow_ok(self):
         r = self._evaluar(resultado_valido())
@@ -394,45 +394,45 @@ class TestEvaluar(unittest.TestCase):
         r = self._evaluar(resultado_valido(campo_extra="no-contractual", otro=123))
         self.assertNotIn("campo_extra", r)
         self.assertNotIn("otro", r)
-        self.assertEqual(set(r.keys()), set(ri._CAMPOS_CONTRACTUALES))
+        self.assertEqual(set(r.keys()), set(ri._CONTRACT_FIELDS))
 
     def test_cross_check_actor_incorrecto(self):
-        with self.assertRaises(ErrorDeEvaluacion):
+        with self.assertRaises(EvaluationError):
             self._evaluar(resultado_valido(actor_id="INTRUSO"))
 
     def test_politica_personalizada_bloqueada_por_defecto(self):
-        with self.assertRaises(ErrorDeEvaluacion):
-            evaluar(entrada_valida(), policy_path=self.policy)  # sin permitir_...
+        with self.assertRaises(EvaluationError):
+            evaluate(entrada_valida(), policy_path=self.policy)  # sin permitir_...
 
     def test_politica_inexistente(self):
         with self.assertRaises(FileNotFoundError):
-            evaluar(entrada_valida(), policy_path="/no/existe.rego", permitir_politica_personalizada=True)
+            evaluate(entrada_valida(), policy_path="/no/existe.rego", allow_custom_policy=True)
 
     def test_timeout_en_run(self):
         def _raise(*a, **k):
             raise subprocess.TimeoutExpired(cmd="opa", timeout=5)
-        with mock.patch.object(ri, "_resolver_opa", return_value="/opa"), \
+        with mock.patch.object(ri, "_resolve_opa", return_value="/opa"), \
              mock.patch.object(ri.subprocess, "run", side_effect=_raise):
-            with self.assertRaises(ErrorDeEvaluacion):
-                evaluar(entrada_valida(), policy_path=self.policy, permitir_politica_personalizada=True)
+            with self.assertRaises(EvaluationError):
+                evaluate(entrada_valida(), policy_path=self.policy, allow_custom_policy=True)
 
     def test_json_malformado(self):
-        with mock.patch.object(ri, "_resolver_opa", return_value="/opa"), \
+        with mock.patch.object(ri, "_resolve_opa", return_value="/opa"), \
              mock.patch.object(ri.subprocess, "run", return_value=_proc(stdout="{no json")):
-            with self.assertRaises(ErrorDeEvaluacion):
-                evaluar(entrada_valida(), policy_path=self.policy, permitir_politica_personalizada=True)
+            with self.assertRaises(EvaluationError):
+                evaluate(entrada_valida(), policy_path=self.policy, allow_custom_policy=True)
 
     def test_returncode_no_cero(self):
-        with mock.patch.object(ri, "_resolver_opa", return_value="/opa"), \
+        with mock.patch.object(ri, "_resolve_opa", return_value="/opa"), \
              mock.patch.object(ri.subprocess, "run", return_value=_proc(returncode=1, stderr="boom")):
-            with self.assertRaises(ErrorDeEvaluacion):
-                evaluar(entrada_valida(), policy_path=self.policy, permitir_politica_personalizada=True)
+            with self.assertRaises(EvaluationError):
+                evaluate(entrada_valida(), policy_path=self.policy, allow_custom_policy=True)
 
     def test_camino_completo_subprocess_real_mock(self):
         salida = _opa_json(resultado_valido())
-        with mock.patch.object(ri, "_resolver_opa", return_value="/opa"), \
+        with mock.patch.object(ri, "_resolve_opa", return_value="/opa"), \
              mock.patch.object(ri.subprocess, "run", return_value=_proc(stdout=salida)):
-            r = evaluar(entrada_valida(), policy_path=self.policy, permitir_politica_personalizada=True)
+            r = evaluate(entrada_valida(), policy_path=self.policy, allow_custom_policy=True)
             self.assertEqual(r["reason_code"], "RCI_ALLOW_UNIT_MATCH")
 
 
@@ -451,17 +451,17 @@ class TestPolitica(unittest.TestCase):
 
     def test_sha256_estable_y_correcto(self):
         import hashlib
-        h1 = sha256_politica(self.policy)
-        h2 = sha256_politica(self.policy)
+        h1 = policy_sha256(self.policy)
+        h2 = policy_sha256(self.policy)
         self.assertEqual(h1, h2)
         self.assertEqual(h1, hashlib.sha256(Path(self.policy).read_bytes()).hexdigest())
 
     def test_resolver_politica_personalizada_bloqueada(self):
-        with self.assertRaises(ErrorDeEvaluacion):
-            ri._resolver_politica(self.policy, permitir_politica_personalizada=False)
+        with self.assertRaises(EvaluationError):
+            ri._resolve_policy(self.policy, allow_custom_policy=False)
 
     def test_resolver_politica_personalizada_habilitada(self):
-        p = ri._resolver_politica(self.policy, permitir_politica_personalizada=True)
+        p = ri._resolve_policy(self.policy, allow_custom_policy=True)
         self.assertTrue(p.is_absolute())
 
 
@@ -481,7 +481,7 @@ class TestAuditoria(unittest.TestCase):
     def test_registro_minimo(self):
         ent = entrada_valida()
         res = resultado_valido()
-        reg = crear_registro_auditoria(ent, res, policy_path=self.policy, opa_version="1.0.0")
+        reg = build_audit_record(ent, res, policy_path=self.policy, opa_version="1.0.0")
         for k in ("actor_id", "expediente_id", "action", "actor_unidad", "unidad_asignada",
                   "asignacion_status", "decision", "reason_code", "execution_allowed",
                   "excepcion_id_aplicada", "aprobada_por", "evaluated_at", "policy_version",
@@ -492,8 +492,8 @@ class TestAuditoria(unittest.TestCase):
         self.assertEqual(len(reg["policy_sha256"]), 64)
 
     def test_registro_rechaza_resultado_descontextualizado(self):
-        with self.assertRaises(ErrorDeEvaluacion):
-            crear_registro_auditoria(
+        with self.assertRaises(EvaluationError):
+            build_audit_record(
                 entrada_valida(), resultado_valido(actor_id="otro"), policy_path=self.policy
             )
 
@@ -508,12 +508,12 @@ _POLICY_REAL = Path(__file__).with_name("policy.rego")
                      "OPA no disponible o falta policy.rego: se omite la prueba integral")
 class TestIntegracionOpaReal(unittest.TestCase):
     def test_input_valido_da_unit_match(self):
-        r = evaluar(entrada_valida())
+        r = evaluate(entrada_valida())
         self.assertEqual(r["reason_code"], "RCI_ALLOW_UNIT_MATCH")
-        self.assertIs(acceso_permitido(r), True)
+        self.assertIs(access_allowed(r), True)
 
     def test_accion_no_permitida(self):
-        r = evaluar(entrada_valida(actor={"id": "u-001", "unidad": "UNIDAD_A", "acciones_permitidas": ["modificar"]}))
+        r = evaluate(entrada_valida(actor={"id": "u-001", "unidad": "UNIDAD_A", "acciones_permitidas": ["modificar"]}))
         self.assertEqual(r["reason_code"], "RCI_DENY_ACTION_NOT_ALLOWED")
 
 
