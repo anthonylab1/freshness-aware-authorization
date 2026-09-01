@@ -71,7 +71,7 @@ across rules: it is impossible for the policy to return `DENY` with
 
 ### 4. An exception never widens base permissions
 
-The requested action must be in `actor.acciones_permitidas` (a list already
+The requested action must be in `actor.allowed_actions` (a list already
 resolved by the corporate system) **before** units or exceptions are considered.
 An exception can bypass a unit mismatch; it cannot grant an action the actor did
 not have. And an exception resting on a stale source is not valid: exceptions
@@ -105,11 +105,11 @@ each other.
 ```
 .
 ├── .github/workflows/ci.yml     # CI with OPA pinned by version and checksum
-├── contrato.md                  # Input/output schema and trust guarantees
-├── integracion_rci.py           # Python adapter (no external dependencies)
+├── contract.md                   # Input/output schema and trust guarantees
+├── rci_integration.py            # Python adapter (no external dependencies)
 ├── policy.rego                  # The policy
 ├── policy_test.rego             # 80 policy tests
-└── test_integracion_rci.py      # 64 adapter tests
+└── test_rci_integration.py       # 64 adapter tests
 ```
 
 ---
@@ -139,11 +139,11 @@ binary could not be found.
 ## Usage
 
 ```python
-from integracion_rci import Decision, evaluar, obtener_decision
+from rci_integration import Decision, evaluate, get_decision
 
-resultado = evaluar(trusted_backend_input)
+result = evaluate(trusted_backend_input)
 
-match obtener_decision(resultado):
+match get_decision(result):
     case Decision.ALLOW:
         pass  # execute
     case Decision.ALLOW_WITH_EXCEPTION:
@@ -155,7 +155,7 @@ match obtener_decision(resultado):
 ```
 
 The full schema, the trust guarantees and the exact semantics of each decision
-are in [`contrato.md`](contrato.md).
+are in [`contract.md`](contract.md).
 
 ---
 
