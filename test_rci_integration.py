@@ -12,8 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import integracion_rci as ri
-from integracion_rci import (
+import rci_integration as ri
+from rci_integration import (
     Decision,
     DecisionRequiresExplicitHandling,
     EvaluationError,
@@ -32,15 +32,15 @@ def resultado_valido(**over):
         "decision": "ALLOW",
         "reason_code": "RCI_ALLOW_UNIT_MATCH",
         "execution_allowed": True,
-        "regla": "RCI-EXP-001",
+        "rule": "RCI-EXP-001",
         "actor_id": "u-001",
-        "expediente_id": "exp-123",
-        "asignacion_status": "FRESH",
-        "excepcion_id_aplicada": None,
-        "excepcion_existente_no_utilizada": False,
+        "record_id": "exp-123",
+        "assignment_status": "FRESH",
+        "applied_exception_id": None,
+        "unused_exception_present": False,
         "validation_errors": [],
         "evaluated_at": "2026-06-28T10:15:00Z",
-        "policy_version": "3.0.0",
+        "policy_version": "4.0.0",
     }
     base.update(over)
     return base
@@ -48,16 +48,16 @@ def resultado_valido(**over):
 
 def entrada_valida(**over):
     base = {
-        "actor": {"id": "u-001", "unidad": "UNIDAD_A", "acciones_permitidas": ["leer", "modificar"]},
+        "actor": {"id": "u-001", "unit": "UNIDAD_A", "allowed_actions": ["leer", "modificar"]},
         "action": "leer",
         "resource": {
-            "expediente_id": "exp-123",
-            "unidad_asignada": "UNIDAD_A",
-            "asignacion_status": "FRESH",
-            "asignacion_timestamp": "2026-06-28T10:00:00Z",
-            "asignacion_max_age_seconds": 3600,
+            "record_id": "exp-123",
+            "assigned_unit": "UNIDAD_A",
+            "assignment_status": "FRESH",
+            "assignment_timestamp": "2026-06-28T10:00:00Z",
+            "assignment_max_age_seconds": 3600,
         },
-        "excepcion": None,
+        "exception": None,
         "now": "2026-06-28T10:15:00Z",
     }
     base.update(over)
@@ -75,18 +75,18 @@ def _opa_json(value):
 # ===========================================================================
 # _validate_result: coherencia interna (sin entrada)
 # ===========================================================================
-class TestValidarResultado(unittest.TestCase):
+class TestValidateResult(unittest.TestCase):
     def v(self, valor):
         return ri._validate_result(valor)
 
-    def test_valido_ok(self):
+    def test_valid_result_passes(self):
         self.assertEqual(self.v(resultado_valido())["decision"], "ALLOW")
 
-    def test_no_dict_falla(self):
+    def test_non_dict_fails(self):
         with self.assertRaises(EvaluationError):
             self.v(["no", "dict"])
 
-    def test_falta_campo_obligatorio(self):
+    def test_missing_required_field(self):
         for campo in ri._CONTRACT_FIELDS:
             with self.subTest(campo=campo):
                 r = resultado_valido()
@@ -94,96 +94,96 @@ class TestValidarResultado(unittest.TestCase):
                 with self.assertRaises(EvaluationError):
                     self.v(r)
 
-    def test_combinacion_invalida(self):
+    def test_invalid_combination(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(reason_code="RCI_DENY_UNIT_MISMATCH"))  # ALLOW + code DENY
 
-    def test_execution_allowed_string(self):
+    def test_execution_allowed_as_string(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(execution_allowed="false"))
 
-    def test_tipos_no_hashables_no_typeerror(self):
+    def test_unhashable_types_do_not_raise_typeerror(self):
         for campo, val in [("decision", []), ("decision", {}), ("reason_code", []),
-                           ("reason_code", {}), ("asignacion_status", []), ("asignacion_status", {})]:
+                           ("reason_code", {}), ("assignment_status", []), ("assignment_status", {})]:
             with self.subTest(campo=campo, val=type(val).__name__):
                 with self.assertRaises(EvaluationError):
                     self.v(resultado_valido(**{campo: val}))
 
-    def test_version_incorrecta(self):
+    def test_wrong_version(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(policy_version="2.3.1"))
 
-    def test_regla_incorrecta(self):
+    def test_wrong_rule(self):
         with self.assertRaises(EvaluationError):
-            self.v(resultado_valido(regla="OTRA"))
+            self.v(resultado_valido(rule="OTRA"))
 
-    def test_validation_errors_no_string(self):
+    def test_non_string_validation_errors(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(decision="DENY", reason_code="RCI_DENY_INVALID_INPUT",
                                     execution_allowed=False, validation_errors=["ok", 5]))
 
-    def test_invalid_input_sin_errores(self):
+    def test_invalid_input_without_errors(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(decision="DENY", reason_code="RCI_DENY_INVALID_INPUT",
                                     execution_allowed=False, validation_errors=[]))
 
-    def test_validation_errors_desordenados_fallan(self):
+    def test_unsorted_validation_errors_fail(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(decision="DENY", reason_code="RCI_DENY_INVALID_INPUT",
                                     execution_allowed=False, validation_errors=["z", "a"],
-                                    actor_id=None, expediente_id=None, asignacion_status=None,
+                                    actor_id=None, record_id=None, assignment_status=None,
                                     evaluated_at=None))
 
-    def test_allow_con_estado_incoherente(self):
+    def test_allow_with_inconsistent_status(self):
         for estado in ("STALE", "UNAVAILABLE", None):
             with self.subTest(estado=estado):
                 with self.assertRaises(EvaluationError):
-                    self.v(resultado_valido(asignacion_status=estado))
+                    self.v(resultado_valido(assignment_status=estado))
 
-    def test_action_not_allowed_valido(self):
+    def test_action_not_allowed_is_valid(self):
         r = self.v(resultado_valido(decision="DENY", reason_code="RCI_DENY_ACTION_NOT_ALLOWED",
-                                    execution_allowed=False, asignacion_status="FRESH"))
+                                    execution_allowed=False, assignment_status="FRESH"))
         self.assertEqual(r["reason_code"], "RCI_DENY_ACTION_NOT_ALLOWED")
 
-    def test_source_unavailable_exige_unavailable(self):
+    def test_source_unavailable_requires_unavailable(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(decision="DENY", reason_code="RCI_DENY_SOURCE_UNAVAILABLE",
-                                    execution_allowed=False, asignacion_status="FRESH"))
+                                    execution_allowed=False, assignment_status="FRESH"))
 
-    def test_escalate_exige_stale(self):
+    def test_escalate_requires_stale(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(decision="ESCALATE", reason_code="RCI_ESCALATE_STALE_ASSIGNMENT",
-                                    execution_allowed=False, asignacion_status="FRESH"))
+                                    execution_allowed=False, assignment_status="FRESH"))
 
-    def test_audit_vacio_falla(self):
-        for campo in ("actor_id", "expediente_id", "evaluated_at"):
+    def test_empty_audit_fails(self):
+        for campo in ("actor_id", "record_id", "evaluated_at"):
             for val in (None, ""):
                 with self.subTest(campo=campo, val=val):
                     with self.assertRaises(EvaluationError):
                         self.v(resultado_valido(**{campo: val}))
 
-    def test_evaluated_at_no_rfc3339_en_negocio_falla(self):
+    def test_non_rfc3339_evaluated_at_in_business_result_fails(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(evaluated_at="ayer"))
 
-    def test_evaluated_at_segundo_60_falla(self):
+    def test_evaluated_at_leap_second_fails(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(evaluated_at="2026-06-28T10:15:60Z"))
 
-    def test_evaluated_at_con_salto_linea_falla_controladamente(self):
+    def test_evaluated_at_with_newline_fails_gracefully(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(evaluated_at="2026-06-28T10:15:00Z\n"))
 
-    def test_allow_with_exception_sin_id_falla(self):
+    def test_allow_with_exception_without_id_fails(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(decision="ALLOW_WITH_EXCEPTION",
-                                    reason_code="RCI_ALLOW_EXCEPTION_APPLIED", excepcion_id_aplicada=None))
+                                    reason_code="RCI_ALLOW_EXCEPTION_APPLIED", applied_exception_id=None))
 
-    def test_id_excepcion_en_allow_falla(self):
+    def test_exception_id_in_allow_fails(self):
         with self.assertRaises(EvaluationError):
-            self.v(resultado_valido(excepcion_id_aplicada="exc-1"))
+            self.v(resultado_valido(applied_exception_id="exc-1"))
 
-    def test_seis_mas_una_combinaciones_validas(self):
+    def test_seven_valid_combinations(self):
         casos = [
             ("ALLOW", "RCI_ALLOW_UNIT_MATCH", True, [], None, "FRESH"),
             ("ALLOW_WITH_EXCEPTION", "RCI_ALLOW_EXCEPTION_APPLIED", True, [], "exc-1", "STALE"),
@@ -196,157 +196,157 @@ class TestValidarResultado(unittest.TestCase):
         for d, rc, ex, ve, ei, st in casos:
             with self.subTest(rc=rc):
                 r = self.v(resultado_valido(decision=d, reason_code=rc, execution_allowed=ex,
-                                            validation_errors=ve, excepcion_id_aplicada=ei, asignacion_status=st))
+                                            validation_errors=ve, applied_exception_id=ei, assignment_status=st))
                 self.assertEqual(r["reason_code"], rc)
 
 
 # ===========================================================================
-# Vínculo result <-> petición
+# result <-> request binding
 # ===========================================================================
-class TestEcos(unittest.TestCase):
+class TestEchoes(unittest.TestCase):
     def v(self, result, entrada):
         return ri._validate_result(result, entrada)
 
-    def test_ecos_correctos_ok(self):
+    def test_correct_echoes_pass(self):
         self.v(resultado_valido(), entrada_valida())
 
-    def test_actor_incorrecto(self):
+    def test_wrong_actor(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(actor_id="OTRO"), entrada_valida())
 
-    def test_expediente_incorrecto(self):
+    def test_wrong_record(self):
         with self.assertRaises(EvaluationError):
-            self.v(resultado_valido(expediente_id="OTRO"), entrada_valida())
+            self.v(resultado_valido(record_id="OTRO"), entrada_valida())
 
-    def test_estado_incorrecto(self):
+    def test_wrong_status(self):
         with self.assertRaises(EvaluationError):
-            self.v(resultado_valido(asignacion_status="STALE"),
-                   entrada_valida(resource={**entrada_valida()["resource"], "asignacion_status": "FRESH"}))
+            self.v(resultado_valido(assignment_status="STALE"),
+                   entrada_valida(resource={**entrada_valida()["resource"], "assignment_status": "FRESH"}))
 
-    def test_evaluated_at_incorrecto(self):
+    def test_wrong_evaluated_at(self):
         with self.assertRaises(EvaluationError):
             self.v(resultado_valido(evaluated_at="2026-06-28T09:00:00Z"), entrada_valida())
 
-    def test_id_excepcion_incorrecto(self):
-        ent = entrada_valida(excepcion={"id": "exc-REAL"})
+    def test_wrong_exception_id(self):
+        ent = entrada_valida(exception={"id": "exc-REAL"})
         res = resultado_valido(decision="ALLOW_WITH_EXCEPTION", reason_code="RCI_ALLOW_EXCEPTION_APPLIED",
-                               excepcion_id_aplicada="exc-FALSO")
+                               applied_exception_id="exc-FALSO")
         with self.assertRaises(EvaluationError):
             self.v(res, ent)
 
-    def test_invalid_input_ecos_saneados_ok(self):
-        ent = {"actor": {"id": 123}, "resource": {"asignacion_status": "BOGUS"}, "now": 99999}
+    def test_invalid_input_sanitised_echoes_pass(self):
+        ent = {"actor": {"id": 123}, "resource": {"assignment_status": "BOGUS"}, "now": 99999}
         res = resultado_valido(decision="DENY", reason_code="RCI_DENY_INVALID_INPUT", execution_allowed=False,
-                               validation_errors=["e"], actor_id=None, expediente_id=None,
-                               asignacion_status=None, evaluated_at=None)
+                               validation_errors=["e"], actor_id=None, record_id=None,
+                               assignment_status=None, evaluated_at=None)
         self.v(res, ent)  # ecos None coinciden con el saneado de un input basura
 
-    def test_invalid_input_estado_no_hashable_se_sanea_sin_typeerror(self):
+    def test_invalid_input_unhashable_status_sanitised_without_typeerror(self):
         res = resultado_valido(decision="DENY", reason_code="RCI_DENY_INVALID_INPUT", execution_allowed=False,
-                               validation_errors=["e"], actor_id=None, expediente_id=None,
-                               asignacion_status=None, evaluated_at=None)
+                               validation_errors=["e"], actor_id=None, record_id=None,
+                               assignment_status=None, evaluated_at=None)
         for estado in ([], {}):
             with self.subTest(tipo=type(estado).__name__):
-                self.v(res, {"resource": {"asignacion_status": estado}})
+                self.v(res, {"resource": {"assignment_status": estado}})
 
 
 # ===========================================================================
 # get_decision / access_allowed
 # ===========================================================================
 class TestDecision(unittest.TestCase):
-    def test_obtener_decision(self):
+    def test_get_decision(self):
         self.assertIs(get_decision(resultado_valido()), Decision.ALLOW)
 
-    def test_acceso_allow_true(self):
+    def test_access_allow_is_true(self):
         self.assertIs(access_allowed(resultado_valido()), True)
 
-    def test_acceso_deny_false(self):
+    def test_access_deny_is_false(self):
         r = resultado_valido(decision="DENY", reason_code="RCI_DENY_UNIT_MISMATCH", execution_allowed=False)
         self.assertIs(access_allowed(r), False)
 
-    def test_acceso_action_not_allowed_false(self):
+    def test_access_action_not_allowed_is_false(self):
         r = resultado_valido(decision="DENY", reason_code="RCI_DENY_ACTION_NOT_ALLOWED", execution_allowed=False)
         self.assertIs(access_allowed(r), False)
 
-    def test_allow_with_exception_lanza(self):
+    def test_allow_with_exception_raises(self):
         r = resultado_valido(decision="ALLOW_WITH_EXCEPTION", reason_code="RCI_ALLOW_EXCEPTION_APPLIED",
-                             excepcion_id_aplicada="exc-9", asignacion_status="STALE")
+                             applied_exception_id="exc-9", assignment_status="STALE")
         with self.assertRaises(DecisionRequiresExplicitHandling) as ctx:
             access_allowed(r)
         self.assertEqual(ctx.exception.decision, "ALLOW_WITH_EXCEPTION")
         self.assertEqual(ctx.exception.reason_code, "RCI_ALLOW_EXCEPTION_APPLIED")
-        self.assertEqual(ctx.exception.excepcion_id_aplicada, "exc-9")
+        self.assertEqual(ctx.exception.applied_exception_id, "exc-9")
 
-    def test_escalate_lanza(self):
+    def test_escalate_raises(self):
         r = resultado_valido(decision="ESCALATE", reason_code="RCI_ESCALATE_STALE_ASSIGNMENT",
-                             execution_allowed=False, asignacion_status="STALE")
+                             execution_allowed=False, assignment_status="STALE")
         with self.assertRaises(DecisionRequiresExplicitHandling) as ctx:
             access_allowed(r)
         self.assertEqual(ctx.exception.decision, "ESCALATE")
-        self.assertIsNone(ctx.exception.excepcion_id_aplicada)
+        self.assertIsNone(ctx.exception.applied_exception_id)
 
-    def test_acceso_incompleto_lanza_error(self):
+    def test_incomplete_access_raises_error(self):
         with self.assertRaises(EvaluationError):
             access_allowed({"execution_allowed": True})
 
 
 # ===========================================================================
-# Serialización estricta
+# Strict serialisation
 # ===========================================================================
-class TestSerializacion(unittest.TestCase):
-    def test_dict_ok(self):
+class TestSerialisation(unittest.TestCase):
+    def test_dict_passes(self):
         self.assertIn('"a"', ri._serialise_input({"a": 1}))
 
-    def test_raiz_no_dict(self):
+    def test_root_not_a_dict(self):
         for raiz in (None, [1, 2], "texto", 42, 3.5, True):
             with self.subTest(raiz=type(raiz).__name__):
                 with self.assertRaises(EvaluationError):
                     ri._serialise_input(raiz)
 
-    def test_nan_infinitos(self):
+    def test_nan_and_infinities(self):
         for val in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(val=val):
                 with self.assertRaises(EvaluationError):
                     ri._serialise_input({"x": val})
 
-    def test_objeto_no_serializable(self):
+    def test_non_serialisable_object(self):
         with self.assertRaises(EvaluationError):
             ri._serialise_input({"x": object()})
 
 
 # ===========================================================================
-# Validación de timeout
+# Timeout validation
 # ===========================================================================
 class TestTimeout(unittest.TestCase):
-    def test_validos(self):
+    def test_valid_values(self):
         for t in (0.1, 1, 5.0, 30):
             ri._validate_timeout(t)  # no lanza
 
-    def test_invalidos(self):
+    def test_invalid_values(self):
         for t in (0, -1, -0.5, True, False, "5", float("nan"), float("inf")):
             with self.subTest(t=repr(t)):
                 with self.assertRaises(EvaluationError):
                     ri._validate_timeout(t)
 
-    def test_evaluar_rechaza_timeout_invalido_antes_de_opa(self):
+    def test_evaluate_rejects_invalid_timeout_before_opa(self):
         with self.assertRaises(EvaluationError):
             evaluate(entrada_valida(), timeout=0)
 
 
 # ===========================================================================
-# Resolución segura de OPA
+# Safe OPA resolution
 # ===========================================================================
-class TestOpaResolucion(unittest.TestCase):
-    def test_no_en_path(self):
+class TestOpaResolution(unittest.TestCase):
+    def test_not_on_path(self):
         with mock.patch.object(ri.shutil, "which", return_value=None):
             with self.assertRaises(OPAUnavailable):
                 ri._resolve_opa(None)
 
-    def test_inexistente(self):
+    def test_missing_binary(self):
         with self.assertRaises(OPAUnavailable):
             ri._resolve_opa("/no/existe/opa_zzz")
 
-    def test_no_ejecutable(self):
+    def test_not_executable(self):
         with tempfile.NamedTemporaryFile(suffix="opa", delete=False) as f:
             ruta = f.name
         os.chmod(ruta, 0o644)
@@ -356,7 +356,7 @@ class TestOpaResolucion(unittest.TestCase):
         finally:
             os.unlink(ruta)
 
-    def test_ruta_absoluta_ejecutable(self):
+    def test_absolute_executable_path(self):
         with tempfile.NamedTemporaryFile(suffix="opa", delete=False) as f:
             ruta = f.name
         os.chmod(ruta, 0o755)
@@ -370,7 +370,7 @@ class TestOpaResolucion(unittest.TestCase):
 # ===========================================================================
 # evaluate(): camino completo con mocks
 # ===========================================================================
-class TestEvaluar(unittest.TestCase):
+class TestEvaluate(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".rego", delete=False)
         self.tmp.write(b"package rci.exp001\n")
@@ -386,29 +386,29 @@ class TestEvaluar(unittest.TestCase):
              mock.patch.object(ri, "_run_opa", return_value=valor_opa):
             return evaluate(entrada, policy_path=self.policy, allow_custom_policy=True, **kw)
 
-    def test_allow_ok(self):
+    def test_allow_passes(self):
         r = self._evaluar(resultado_valido())
         self.assertEqual(r["decision"], "ALLOW")
 
-    def test_campos_adicionales_eliminados(self):
+    def test_extra_fields_are_stripped(self):
         r = self._evaluar(resultado_valido(campo_extra="no-contractual", otro=123))
         self.assertNotIn("campo_extra", r)
         self.assertNotIn("otro", r)
         self.assertEqual(set(r.keys()), set(ri._CONTRACT_FIELDS))
 
-    def test_cross_check_actor_incorrecto(self):
+    def test_cross_check_wrong_actor(self):
         with self.assertRaises(EvaluationError):
             self._evaluar(resultado_valido(actor_id="INTRUSO"))
 
-    def test_politica_personalizada_bloqueada_por_defecto(self):
+    def test_custom_policy_blocked_by_default(self):
         with self.assertRaises(EvaluationError):
             evaluate(entrada_valida(), policy_path=self.policy)  # sin permitir_...
 
-    def test_politica_inexistente(self):
+    def test_missing_policy_file(self):
         with self.assertRaises(FileNotFoundError):
             evaluate(entrada_valida(), policy_path="/no/existe.rego", allow_custom_policy=True)
 
-    def test_timeout_en_run(self):
+    def test_timeout_during_run(self):
         def _raise(*a, **k):
             raise subprocess.TimeoutExpired(cmd="opa", timeout=5)
         with mock.patch.object(ri, "_resolve_opa", return_value="/opa"), \
@@ -416,19 +416,19 @@ class TestEvaluar(unittest.TestCase):
             with self.assertRaises(EvaluationError):
                 evaluate(entrada_valida(), policy_path=self.policy, allow_custom_policy=True)
 
-    def test_json_malformado(self):
+    def test_malformed_json(self):
         with mock.patch.object(ri, "_resolve_opa", return_value="/opa"), \
              mock.patch.object(ri.subprocess, "run", return_value=_proc(stdout="{no json")):
             with self.assertRaises(EvaluationError):
                 evaluate(entrada_valida(), policy_path=self.policy, allow_custom_policy=True)
 
-    def test_returncode_no_cero(self):
+    def test_non_zero_return_code(self):
         with mock.patch.object(ri, "_resolve_opa", return_value="/opa"), \
              mock.patch.object(ri.subprocess, "run", return_value=_proc(returncode=1, stderr="boom")):
             with self.assertRaises(EvaluationError):
                 evaluate(entrada_valida(), policy_path=self.policy, allow_custom_policy=True)
 
-    def test_camino_completo_subprocess_real_mock(self):
+    def test_full_path_with_mocked_subprocess(self):
         salida = _opa_json(resultado_valido())
         with mock.patch.object(ri, "_resolve_opa", return_value="/opa"), \
              mock.patch.object(ri.subprocess, "run", return_value=_proc(stdout=salida)):
@@ -437,9 +437,9 @@ class TestEvaluar(unittest.TestCase):
 
 
 # ===========================================================================
-# Política empaquetada / SHA-256
+# Bundled policy / SHA-256
 # ===========================================================================
-class TestPolitica(unittest.TestCase):
+class TestPolicy(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".rego", delete=False)
         self.tmp.write(b"package rci.exp001\n# contenido\n")
@@ -449,26 +449,26 @@ class TestPolitica(unittest.TestCase):
     def tearDown(self):
         Path(self.policy).unlink(missing_ok=True)
 
-    def test_sha256_estable_y_correcto(self):
+    def test_sha256_is_stable_and_correct(self):
         import hashlib
         h1 = policy_sha256(self.policy)
         h2 = policy_sha256(self.policy)
         self.assertEqual(h1, h2)
         self.assertEqual(h1, hashlib.sha256(Path(self.policy).read_bytes()).hexdigest())
 
-    def test_resolver_politica_personalizada_bloqueada(self):
+    def test_resolve_custom_policy_blocked(self):
         with self.assertRaises(EvaluationError):
             ri._resolve_policy(self.policy, allow_custom_policy=False)
 
-    def test_resolver_politica_personalizada_habilitada(self):
+    def test_resolve_custom_policy_enabled(self):
         p = ri._resolve_policy(self.policy, allow_custom_policy=True)
         self.assertTrue(p.is_absolute())
 
 
 # ===========================================================================
-# Auditoría mínima
+# Minimal audit
 # ===========================================================================
-class TestAuditoria(unittest.TestCase):
+class TestAudit(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".rego", delete=False)
         self.tmp.write(b"package rci.exp001\n")
@@ -478,20 +478,20 @@ class TestAuditoria(unittest.TestCase):
     def tearDown(self):
         Path(self.policy).unlink(missing_ok=True)
 
-    def test_registro_minimo(self):
+    def test_minimal_record(self):
         ent = entrada_valida()
         res = resultado_valido()
         reg = build_audit_record(ent, res, policy_path=self.policy, opa_version="1.0.0")
-        for k in ("actor_id", "expediente_id", "action", "actor_unidad", "unidad_asignada",
-                  "asignacion_status", "decision", "reason_code", "execution_allowed",
-                  "excepcion_id_aplicada", "aprobada_por", "evaluated_at", "policy_version",
+        for k in ("actor_id", "record_id", "action", "actor_unit", "assigned_unit",
+                  "assignment_status", "decision", "reason_code", "execution_allowed",
+                  "applied_exception_id", "approved_by", "evaluated_at", "policy_version",
                   "policy_sha256", "opa_version"):
             self.assertIn(k, reg)
         self.assertEqual(reg["decision"], "ALLOW")
         self.assertEqual(reg["action"], "leer")
         self.assertEqual(len(reg["policy_sha256"]), 64)
 
-    def test_registro_rechaza_resultado_descontextualizado(self):
+    def test_record_rejects_out_of_context_result(self):
         with self.assertRaises(EvaluationError):
             build_audit_record(
                 entrada_valida(), resultado_valido(actor_id="otro"), policy_path=self.policy
@@ -506,14 +506,14 @@ _POLICY_REAL = Path(__file__).with_name("policy.rego")
 
 @unittest.skipUnless(shutil.which("opa") and _POLICY_REAL.is_file(),
                      "OPA no disponible o falta policy.rego: se omite la prueba integral")
-class TestIntegracionOpaReal(unittest.TestCase):
-    def test_input_valido_da_unit_match(self):
+class TestRealOpaIntegration(unittest.TestCase):
+    def test_valid_input_yields_unit_match(self):
         r = evaluate(entrada_valida())
         self.assertEqual(r["reason_code"], "RCI_ALLOW_UNIT_MATCH")
         self.assertIs(access_allowed(r), True)
 
-    def test_accion_no_permitida(self):
-        r = evaluate(entrada_valida(actor={"id": "u-001", "unidad": "UNIDAD_A", "acciones_permitidas": ["modificar"]}))
+    def test_disallowed_action(self):
+        r = evaluate(entrada_valida(actor={"id": "u-001", "unit": "UNIDAD_A", "allowed_actions": ["modificar"]}))
         self.assertEqual(r["reason_code"], "RCI_DENY_ACTION_NOT_ALLOWED")
 
 

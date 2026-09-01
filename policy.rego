@@ -3,82 +3,88 @@ package rci.exp001
 import rego.v1
 
 # =============================================================================
-# RCI-EXP-001 — Coherencia procedimental para acceso a expediente
+# RCI-EXP-001 — Procedural consistency for record access
 #
-# Política puramente declarativa. Cambios respecto a la 1.0.0 (ver contrato.md,
-# sección "Changelog 2.0.0"):
+# A purely declarative policy. Changes from 1.0.0 (see contract.md,
+# section "Changelog 2.0.0"):
 #
-#   1. Toda excepción que conceda acceso exige `fuente_status == "FRESH"`,
-#      tanto con asignación FRESH como STALE.
-#   2. Los instantes (`now`, `vigente_desde`, `vigente_hasta`,
-#      `asignacion_timestamp`) se comparan como nanosegundos vía
-#      `time.parse_rfc3339_ns`, nunca como strings.
-#   3. La política SIEMPRE devuelve un result estructurado. Si el input no
-#      cumple el contrato -> DENY / RCI_DENY_INVALID_INPUT con `validation_errors`.
-#   4. `decision`, `reason_code` y `execution_allowed` se emiten juntos en un
-#      único objeto `outcome`, de modo que no pueden desincronizarse entre reglas.
-#   5. Nuevo `excepcion.id` en input y `excepcion_id_aplicada` en output.
-#   6. Rego NO recalcula el estado, pero SÍ detecta contradicciones entre
-#      `asignacion_status`, `asignacion_timestamp` y `asignacion_max_age_seconds`
-#      y las trata como input inválido.
+#   1. Any exception granting access requires `source_status == "FRESH"`,
+#      with both FRESH and STALE assignments.
+#   2. Instants (`now`, `valid_from`, `valid_until`, `assignment_timestamp`)
+#      are compared as nanoseconds via `time.parse_rfc3339_ns`, never as
+#      strings.
+#   3. The policy ALWAYS returns a structured result. If the input does not
+#      meet the contract -> DENY / RCI_DENY_INVALID_INPUT with
+#      `validation_errors`.
+#   4. `decision`, `reason_code` and `execution_allowed` are emitted together
+#      in a single `outcome` object, so they cannot fall out of sync across
+#      rules.
+#   5. New `exception.id` in the input and `applied_exception_id` in the output.
+#   6. Rego does NOT recompute the status, but it DOES detect contradictions
+#      between `assignment_status`, `assignment_timestamp` and
+#      `assignment_max_age_seconds`, and treats them as invalid input.
 #
-# Cambios 2.1.0:
-#   7. `excepcion` es obligatorio: se valida que la CLAVE exista aunque valga null.
-#   8. Nuevas validaciones: `asignacion_timestamp <= now` (sin futuros),
-#      `asignacion_max_age_seconds >= 0`.
-#   9. La frescura de la excepción se modela igual que la de la asignación:
-#      `excepcion.fuente_timestamp` + `excepcion.fuente_max_age_seconds`, y se
-#      valida que `fuente_status` no contradiga su edad real.
+# Changes in 2.1.0:
+#   7. `exception` is required: the KEY must exist even when its value is null.
+#   8. New validations: `assignment_timestamp <= now` (no future values),
+#      `assignment_max_age_seconds >= 0`.
+#   9. Exception freshness is modelled like assignment freshness:
+#      `exception.source_timestamp` + `exception.source_max_age_seconds`, and
+#      `source_status` is validated against the real age.
 #
-# Cambios 2.2.0 (endurecimiento):
-#  10. Se valida que la raíz del input sea un objeto (null/string/array -> inválido).
-#  11. Se rechazan excepciones con `vigente_desde` posterior a `vigente_hasta`.
-#  12. `acciones_autorizadas` debe ser array de strings NO vacíos.
-#  13. Fechas: validación de calendario (p. ej. 2026-02-31 se rechaza) ANTES de
-#      parsear. `time.parse_rfc3339_ns` solo recibe fechas ya validadas, por lo
-#      que la política no aborta ni con --strict-builtin-errors.
+# Changes in 2.2.0 (hardening):
+#  10. The input root is validated to be an object (null/string/array ->
+#      invalid).
+#  11. Exceptions with `valid_from` later than `valid_until` are rejected.
+#  12. `authorised_actions` must be an array of NON-empty strings.
+#  13. Dates: calendar validation (for example 2026-02-31 is rejected) BEFORE
+#      parsing. `time.parse_rfc3339_ns` only ever receives validated dates, so
+#      the policy does not abort even under --strict-builtin-errors.
 #
-# Cambios 2.3.0 (endurecimiento):
-#  14. Representabilidad: además de forma+calendario, el año se limita al rango
-#      que OPA puede representar como ns int64 (~1678..2261) y se exige que
-#      `time.parse_rfc3339_ns` devuelva realmente un número (`_ns`). Fechas no
-#      representables (p. ej. años 0000 o 9999) -> RCI_DENY_INVALID_INPUT.
-#  15. Se rechazan strings vacíos en actor.id, actor.unidad, action,
-#      resource.expediente_id, resource.unidad_asignada, y en los ids y
-#      aprobada_por de la excepción.
-# Cambios 2.3.1 (saneado de auditoría):
-#  16. Los ecos de auditoría del output (actor_id, expediente_id,
-#      asignacion_status, evaluated_at) se sanean por tipo: se refleja el
-#      valor del input solo si tiene el tipo contractual; si no, null. No
-#      cambia la decisión, el reason_code ni validation_errors.
-# Cambios 3.0.0 (autorización por acción + frontera de confianza):
-#  17. Nuevo actor.acciones_permitidas (array de strings no vacíos, obligatorio):
-#      lista de acciones ya resuelta por el sistema corporativo (dato del PEP).
-#  18. Nueva decisión DENY/RCI_DENY_ACTION_NOT_ALLOWED cuando el input es válido
-#      pero la accion no está en actor.acciones_permitidas. Se comprueba ANTES de
-#      unidad y excepciones: una excepción no puede conceder una acción no permitida.
+# Changes in 2.3.0 (hardening):
+#  14. Representability: beyond shape and calendar, the year is limited to the
+#      range OPA can represent as int64 nanoseconds (~1678..2261), and
+#      `time.parse_rfc3339_ns` is required to actually return a number (`_ns`).
+#      Non-representable dates (for example years 0000 or 9999) ->
+#      RCI_DENY_INVALID_INPUT.
+#  15. Empty strings are rejected in actor.id, actor.unit, action,
+#      resource.record_id, resource.assigned_unit, and in the exception ids and
+#      approved_by.
+#
+# Changes in 2.3.1 (audit echo sanitisation):
+#  16. Audit echoes in the output (actor_id, record_id, assignment_status,
+#      evaluated_at) are sanitised by type: the input value is reflected only
+#      if it has the contractual type; otherwise null. This does not change the
+#      decision, the reason_code or validation_errors.
+#
+# Changes in 3.0.0 (per-action authorization + trust boundary):
+#  17. New actor.allowed_actions (array of non-empty strings, required): list
+#      of actions already resolved by the corporate system (PEP data).
+#  18. New decision DENY/RCI_DENY_ACTION_NOT_ALLOWED when the input is valid
+#      but the action is not in actor.allowed_actions. Checked BEFORE unit and
+#      exceptions: an exception cannot grant a disallowed action.
 # =============================================================================
 
-policy_version := "3.0.0"
+policy_version := "4.0.0"
 
-# Enums cerrados reutilizados en validación y lógica.
+# Closed enums reused in validation and logic.
 valid_statuses := {"FRESH", "STALE", "UNAVAILABLE"}
 
 # -----------------------------------------------------------------------------
-# Utilidades puras
+# Pure helpers
 # -----------------------------------------------------------------------------
 
-# Raíz segura: si `input` no es un objeto (null, string, array, número...), se
-# trabaja sobre {} para que ningún object.get falle y el result siga definido.
+# Safe root: if `input` is not an object (null, string, array, number...), we
+# work over {} so no object.get fails and the result stays defined.
 _root := input if is_object(input)
 
 _root := {} if not is_object(input)
 
-# Forma RFC3339 (fecha-hora con `Z` u offset ±hh:mm). Se usa [0-9] en vez de \d
-# para no depender de las clases Perl del motor de regex.
+# RFC 3339 shape (date-time with `Z` or ±hh:mm offset). [0-9] is used instead of \d
+# so as not to depend on the Perl classes of the regex engine.
 _rfc3339_re := `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+][0-9]{2}:[0-9]{2}|[-][0-9]{2}:[0-9]{2})$`
 
-# Días por mes, con año bisiesto para febrero.
+# Days per month, with leap year handling for February.
 _divisible(a, b) if a / b == floor(a / b)
 
 _is_leap_year(y) if {
@@ -102,18 +108,18 @@ _days_in_month(y, m) := 28 if {
 	not _is_leap_year(y)
 }
 
-# Lectura de enteros por posición sin `to_number` (que en algunos motores rechaza
-# ceros a la izquierda como "06"). _two_digits lee dos dígitos; el año son dos pares.
+# Reads integers by position without `to_number` (which in some engines rejects
+# leading zeros such as "06"). _two_digits reads two digits; the year is two pairs.
 _digit := {"0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9}
 
 _two_digits(s, pos) := (10 * _digit[substring(s, pos, 1)]) + _digit[substring(s, pos + 1, 1)]
 
 _year(s) := (100 * _two_digits(s, 0)) + _two_digits(s, 2)
 
-# Validación de calendario a partir de posiciones fijas (la forma ya la garantiza
-# el regex). Rechaza fechas imposibles como 2026-02-31 o 2026-13-01 SIN parsear.
-# El año se limita al rango representable como nanosegundos int64 por OPA
-# (rango aceptado 1678..2261 inclusive): fuera de él time.parse_rfc3339_ns desborda.
+# Calendar validation from fixed positions (the shape is already guaranteed by
+# the regex). Rejects impossible dates such as 2026-02-31 or 2026-13-01 WITHOUT parsing.
+# The year is limited to the range OPA can represent as int64 nanoseconds
+# (accepted range 1678..2261 inclusive): outside it time.parse_rfc3339_ns overflows.
 _valid_calendar_date(s) if {
 	anio := _year(s)
 	mes := _two_digits(s, 5)
@@ -129,7 +135,7 @@ _valid_calendar_date(s) if {
 	_two_digits(s, 17) <= 59
 }
 
-# Offset horario válido: `Z`, o ±hh:mm con hh<=23 y mm<=59.
+# Valid time offset: `Z`, or ±hh:mm with hh<=23 and mm<=59.
 _valid_offset(s) if endswith(s, "Z")
 
 _valid_offset(s) if {
@@ -139,10 +145,10 @@ _valid_offset(s) if {
 	_two_digits(s, n - 2) <= 59
 }
 
-# Devuelve el propio string SOLO si es un RFC3339 real (forma + calendario +
-# offset). Es la única puerta por la que pasan los strings antes de parsear: así
-# `time.parse_rfc3339_ns` nunca recibe una fecha imposible y no puede abortar,
-# ni siquiera con --strict-builtin-errors.
+# Returns the string itself ONLY if it is a real RFC 3339 value (shape + calendar +
+# offset). It is the only gate strings pass through before parsing, so that
+# `time.parse_rfc3339_ns` never receives an impossible date and cannot abort,
+# not even under --strict-builtin-errors.
 _rfc3339_ok(s) := s if {
 	is_string(s)
 	regex.match(_rfc3339_re, s)
@@ -150,25 +156,25 @@ _rfc3339_ok(s) := s if {
 	_valid_offset(s)
 }
 
-# Nanosegundos del instante, PERO solo si el parseo produce realmente un número.
-# No basta con forma+calendario: se confirma que OPA puede representar la fecha.
-# Si no, `_ns` queda indefinido -> el campo se marca inválido.
+# Nanoseconds of the instant, BUT only if the parse actually produces a number.
+# Shape and calendar are not enough: we confirm OPA can represent the date.
+# Otherwise `_ns` is undefined -> the field is marked invalid.
 _ns(s) := n if {
 	n := time.parse_rfc3339_ns(_rfc3339_ok(s))
 	is_number(n)
 }
 
-# Booleano de conveniencia para las comprobaciones de validación.
+# Convenience boolean for the validation checks.
 is_rfc3339(s) if _ns(s)
 
 # -----------------------------------------------------------------------------
-# Validación de input -> conjunto `_verr` de mensajes de error.
-# Cada comprobación usa accesos seguros (object.get con default) para que la
-# ausencia de un campo produzca un error de validación en vez de dejar la
-# política indefinida.
+# Input validation -> set `_verr` of error messages.
+# Every check uses safe access (object.get with a default) so that a missing
+# field produces a validation error instead of leaving the policy
+# undefined.
 # -----------------------------------------------------------------------------
 
-# La raíz del input debe ser un objeto JSON (no null, string, array ni número).
+# The input root must be a JSON object (not null, string, array or number).
 _verr contains "input: root must be a JSON object" if {
 	not is_object(input)
 }
@@ -177,121 +183,121 @@ _verr contains "actor.id: missing, not a string, or empty" if {
 	not _non_empty_string(object.get(_root, ["actor", "id"], null))
 }
 
-_verr contains "actor.unidad: missing, not a string, or empty" if {
-	not _non_empty_string(object.get(_root, ["actor", "unidad"], null))
+_verr contains "actor.unit: missing, not a string, or empty" if {
+	not _non_empty_string(object.get(_root, ["actor", "unit"], null))
 }
 
 _verr contains "action: missing, not a string, or empty" if {
 	not _non_empty_string(object.get(_root, ["action"], null))
 }
 
-_verr contains "actor.acciones_permitidas: missing or not an array" if {
-	not is_array(object.get(_root, ["actor", "acciones_permitidas"], null))
+_verr contains "actor.allowed_actions: missing or not an array" if {
+	not is_array(object.get(_root, ["actor", "allowed_actions"], null))
 }
 
-_verr contains "actor.acciones_permitidas: must contain only non-empty strings" if {
-	is_array(object.get(_root, ["actor", "acciones_permitidas"], null))
-	some x in input.actor.acciones_permitidas
+_verr contains "actor.allowed_actions: must contain only non-empty strings" if {
+	is_array(object.get(_root, ["actor", "allowed_actions"], null))
+	some x in input.actor.allowed_actions
 	not _non_empty_string(x)
 }
 
-_verr contains "resource.expediente_id: missing, not a string, or empty" if {
-	not _non_empty_string(object.get(_root, ["resource", "expediente_id"], null))
+_verr contains "resource.record_id: missing, not a string, or empty" if {
+	not _non_empty_string(object.get(_root, ["resource", "record_id"], null))
 }
 
-_verr contains "resource.asignacion_status: missing or outside enum {FRESH,STALE,UNAVAILABLE}" if {
-	not object.get(_root, ["resource", "asignacion_status"], null) in valid_statuses
+_verr contains "resource.assignment_status: missing or outside enum {FRESH,STALE,UNAVAILABLE}" if {
+	not object.get(_root, ["resource", "assignment_status"], null) in valid_statuses
 }
 
-_verr contains "resource.asignacion_max_age_seconds: missing or not a number" if {
-	not is_number(object.get(_root, ["resource", "asignacion_max_age_seconds"], null))
+_verr contains "resource.assignment_max_age_seconds: missing or not a number" if {
+	not is_number(object.get(_root, ["resource", "assignment_max_age_seconds"], null))
 }
 
-_verr contains "resource.asignacion_max_age_seconds: must be >= 0" if {
-	is_number(object.get(_root, ["resource", "asignacion_max_age_seconds"], null))
-	input.resource.asignacion_max_age_seconds < 0
+_verr contains "resource.assignment_max_age_seconds: must be >= 0" if {
+	is_number(object.get(_root, ["resource", "assignment_max_age_seconds"], null))
+	input.resource.assignment_max_age_seconds < 0
 }
 
 _verr contains "now: RFC 3339 instant missing or invalid" if {
 	not is_rfc3339(object.get(_root, ["now"], null))
 }
 
-# Con FRESH/STALE el dato de asignación es relevante: se exige unidad y timestamp.
-_status_has_data if object.get(_root, ["resource", "asignacion_status"], null) in {"FRESH", "STALE"}
+# With FRESH/STALE the assignment data matters: unit and timestamp are required.
+_status_has_data if object.get(_root, ["resource", "assignment_status"], null) in {"FRESH", "STALE"}
 
-_verr contains "resource.unidad_asignada: missing, not a string, or empty (required if FRESH/STALE)" if {
+_verr contains "resource.assigned_unit: missing, not a string, or empty (required if FRESH/STALE)" if {
 	_status_has_data
-	not _non_empty_string(object.get(_root, ["resource", "unidad_asignada"], null))
+	not _non_empty_string(object.get(_root, ["resource", "assigned_unit"], null))
 }
 
-_verr contains "resource.asignacion_timestamp: RFC 3339 missing or invalid (required if FRESH/STALE)" if {
+_verr contains "resource.assignment_timestamp: RFC 3339 missing or invalid (required if FRESH/STALE)" if {
 	_status_has_data
-	not is_rfc3339(object.get(_root, ["resource", "asignacion_timestamp"], null))
+	not is_rfc3339(object.get(_root, ["resource", "assignment_timestamp"], null))
 }
 
-# Un timestamp de asignación en el futuro no puede considerarse FRESH/STALE.
-_verr contains "resource.asignacion_timestamp: is in the future (> now)" if {
+# A future assignment timestamp cannot be considered FRESH/STALE.
+_verr contains "resource.assignment_timestamp: is in the future (> now)" if {
 	_status_has_data
 	_age_seconds < 0
 }
 
-# --- Coherencia asignacion_status vs (timestamp, max_age) -------------------
-# Rego confía en el adaptador para el ESTADO, pero rechaza como inválido todo
-# input donde el estado declarado contradiga la edad calculada. Convención:
-# edad <= max_age  => FRESH ;  edad > max_age => STALE.
+# --- Consistency of assignment_status vs (timestamp, max_age) ---------------
+# Rego trusts the adapter for the STATUS, but rejects as invalid any input
+# where the declared status contradicts the computed age. Convention:
+# age <= max_age  => FRESH ;  age > max_age => STALE.
 
 _age_seconds := s if {
 	ns_now := _ns(input.now)
-	ns_ts := _ns(input.resource.asignacion_timestamp)
+	ns_ts := _ns(input.resource.assignment_timestamp)
 	s := (ns_now - ns_ts) / 1000000000
 }
 
 _verr contains "consistency: status=FRESH but age > max_age (the adapter should have marked it STALE)" if {
-	input.resource.asignacion_status == "FRESH"
-	is_number(object.get(_root, ["resource", "asignacion_max_age_seconds"], null))
-	_age_seconds > input.resource.asignacion_max_age_seconds
+	input.resource.assignment_status == "FRESH"
+	is_number(object.get(_root, ["resource", "assignment_max_age_seconds"], null))
+	_age_seconds > input.resource.assignment_max_age_seconds
 }
 
 _verr contains "consistency: status=STALE but age <= max_age (the adapter should have marked it FRESH)" if {
-	input.resource.asignacion_status == "STALE"
-	is_number(object.get(_root, ["resource", "asignacion_max_age_seconds"], null))
-	_age_seconds <= input.resource.asignacion_max_age_seconds
+	input.resource.assignment_status == "STALE"
+	is_number(object.get(_root, ["resource", "assignment_max_age_seconds"], null))
+	_age_seconds <= input.resource.assignment_max_age_seconds
 }
 
-# --- Validación de la excepción (solo si viene una) -------------------------
+# --- Exception validation (only when one is supplied) -----------------------
 
-_has_exception if is_object(input.excepcion)
+_has_exception if is_object(input.exception)
 
-# `excepcion` es OBLIGATORIO: debe existir la clave aunque su valor sea null.
-# El centinela distingue "clave ausente" de "valor null" (object.get con path
-# existente devuelve null; con path inexistente devuelve el default).
-_verr contains "excepcion: required field missing (use null when there is no exception)" if {
-	object.get(_root, ["excepcion"], "__AUSENTE__") == "__AUSENTE__"
+# `exception` is REQUIRED: the key must exist even when its value is null.
+# The sentinel distinguishes "missing key" from "null value" (object.get with an
+# existing path returns null; with a missing path it returns the default).
+_verr contains "exception: required field missing (use null when there is no exception)" if {
+	object.get(_root, ["exception"], "__AUSENTE__") == "__AUSENTE__"
 }
 
-_verr contains "excepcion: must be an object or null" if {
-	input.excepcion != null
-	not is_object(input.excepcion)
+_verr contains "exception: must be an object or null" if {
+	input.exception != null
+	not is_object(input.exception)
 }
 
-_verr contains "excepcion.id: missing, not a string, or empty" if {
+_verr contains "exception.id: missing, not a string, or empty" if {
 	_has_exception
-	not _non_empty_string(object.get(input.excepcion, ["id"], null))
+	not _non_empty_string(object.get(input.exception, ["id"], null))
 }
 
-_verr contains "excepcion.actor_id: missing, not a string, or empty" if {
+_verr contains "exception.actor_id: missing, not a string, or empty" if {
 	_has_exception
-	not _non_empty_string(object.get(input.excepcion, ["actor_id"], null))
+	not _non_empty_string(object.get(input.exception, ["actor_id"], null))
 }
 
-_verr contains "excepcion.expediente_id: missing, not a string, or empty" if {
+_verr contains "exception.record_id: missing, not a string, or empty" if {
 	_has_exception
-	not _non_empty_string(object.get(input.excepcion, ["expediente_id"], null))
+	not _non_empty_string(object.get(input.exception, ["record_id"], null))
 }
 
-_verr contains "excepcion.acciones_autorizadas: missing or not an array" if {
+_verr contains "exception.authorised_actions: missing or not an array" if {
 	_has_exception
-	not is_array(object.get(input.excepcion, ["acciones_autorizadas"], null))
+	not is_array(object.get(input.exception, ["authorised_actions"], null))
 }
 
 _non_empty_string(x) if {
@@ -299,139 +305,139 @@ _non_empty_string(x) if {
 	count(x) > 0
 }
 
-_verr contains "excepcion.acciones_autorizadas: must contain only non-empty strings" if {
+_verr contains "exception.authorised_actions: must contain only non-empty strings" if {
 	_has_exception
-	is_array(object.get(input.excepcion, ["acciones_autorizadas"], null))
-	some x in input.excepcion.acciones_autorizadas
+	is_array(object.get(input.exception, ["authorised_actions"], null))
+	some x in input.exception.authorised_actions
 	not _non_empty_string(x)
 }
 
-_verr contains "excepcion.vigente_desde: RFC 3339 missing or invalid" if {
+_verr contains "exception.valid_from: RFC 3339 missing or invalid" if {
 	_has_exception
-	not is_rfc3339(object.get(input.excepcion, ["vigente_desde"], null))
+	not is_rfc3339(object.get(input.exception, ["valid_from"], null))
 }
 
-_verr contains "excepcion.vigente_hasta: RFC 3339 missing or invalid" if {
+_verr contains "exception.valid_until: RFC 3339 missing or invalid" if {
 	_has_exception
-	not is_rfc3339(object.get(input.excepcion, ["vigente_hasta"], null))
+	not is_rfc3339(object.get(input.exception, ["valid_until"], null))
 }
 
-# La ventana de vigencia debe ser coherente: inicio no puede ir después del fin.
-_verr contains "excepcion: vigente_desde is later than vigente_hasta" if {
+# The validity window must be coherent: the start cannot come after the end.
+_verr contains "exception: valid_from is later than valid_until" if {
 	_has_exception
-	ns_desde := _ns(input.excepcion.vigente_desde)
-	ns_hasta := _ns(input.excepcion.vigente_hasta)
-	ns_desde > ns_hasta
+	ns_from := _ns(input.exception.valid_from)
+	ns_until := _ns(input.exception.valid_until)
+	ns_from > ns_until
 }
 
-_verr contains "excepcion.fuente_status: missing or outside enum {FRESH,STALE,UNAVAILABLE}" if {
+_verr contains "exception.source_status: missing or outside enum {FRESH,STALE,UNAVAILABLE}" if {
 	_has_exception
-	not object.get(input.excepcion, ["fuente_status"], null) in valid_statuses
+	not object.get(input.exception, ["source_status"], null) in valid_statuses
 }
 
-_verr contains "excepcion.aprobada_por: missing, not a string, or empty" if {
+_verr contains "exception.approved_by: missing, not a string, or empty" if {
 	_has_exception
-	not _non_empty_string(object.get(input.excepcion, ["aprobada_por"], null))
+	not _non_empty_string(object.get(input.exception, ["approved_by"], null))
 }
 
-# --- Frescura propia de la excepción (paralela a la de la asignación) -------
-# Con fuente_status FRESH/STALE, la excepción debe traer su propio timestamp y
-# umbral, y el fuente_status no puede contradecir su edad real.
-_exception_source_has_data if object.get(input.excepcion, ["fuente_status"], null) in {"FRESH", "STALE"}
+# --- The exception's own freshness (parallel to the assignment's) -----------
+# With source_status FRESH/STALE, the exception must carry its own timestamp and
+# threshold, and source_status cannot contradict its real age.
+_exception_source_has_data if object.get(input.exception, ["source_status"], null) in {"FRESH", "STALE"}
 
-_verr contains "excepcion.fuente_timestamp: RFC 3339 missing or invalid (required if FRESH/STALE)" if {
+_verr contains "exception.source_timestamp: RFC 3339 missing or invalid (required if FRESH/STALE)" if {
 	_has_exception
 	_exception_source_has_data
-	not is_rfc3339(object.get(input.excepcion, ["fuente_timestamp"], null))
+	not is_rfc3339(object.get(input.exception, ["source_timestamp"], null))
 }
 
-_verr contains "excepcion.fuente_max_age_seconds: missing or not a number (required if FRESH/STALE)" if {
+_verr contains "exception.source_max_age_seconds: missing or not a number (required if FRESH/STALE)" if {
 	_has_exception
 	_exception_source_has_data
-	not is_number(object.get(input.excepcion, ["fuente_max_age_seconds"], null))
+	not is_number(object.get(input.exception, ["source_max_age_seconds"], null))
 }
 
-_verr contains "excepcion.fuente_max_age_seconds: must be >= 0" if {
+_verr contains "exception.source_max_age_seconds: must be >= 0" if {
 	_has_exception
-	is_number(object.get(input.excepcion, ["fuente_max_age_seconds"], null))
-	input.excepcion.fuente_max_age_seconds < 0
+	is_number(object.get(input.exception, ["source_max_age_seconds"], null))
+	input.exception.source_max_age_seconds < 0
 }
 
 _exception_age_seconds := s if {
 	ns_now := _ns(input.now)
-	ns_ts := _ns(input.excepcion.fuente_timestamp)
+	ns_ts := _ns(input.exception.source_timestamp)
 	s := (ns_now - ns_ts) / 1000000000
 }
 
-_verr contains "excepcion.fuente_timestamp: is in the future (> now)" if {
+_verr contains "exception.source_timestamp: is in the future (> now)" if {
 	_has_exception
 	_exception_source_has_data
 	_exception_age_seconds < 0
 }
 
-_verr contains "exception consistency: fuente_status=FRESH but age > fuente_max_age" if {
+_verr contains "exception consistency: source_status=FRESH but age > source_max_age" if {
 	_has_exception
-	object.get(input.excepcion, ["fuente_status"], null) == "FRESH"
-	is_number(object.get(input.excepcion, ["fuente_max_age_seconds"], null))
-	_exception_age_seconds > input.excepcion.fuente_max_age_seconds
+	object.get(input.exception, ["source_status"], null) == "FRESH"
+	is_number(object.get(input.exception, ["source_max_age_seconds"], null))
+	_exception_age_seconds > input.exception.source_max_age_seconds
 }
 
-_verr contains "exception consistency: fuente_status=STALE but age <= fuente_max_age" if {
+_verr contains "exception consistency: source_status=STALE but age <= source_max_age" if {
 	_has_exception
-	object.get(input.excepcion, ["fuente_status"], null) == "STALE"
-	is_number(object.get(input.excepcion, ["fuente_max_age_seconds"], null))
-	_exception_age_seconds <= input.excepcion.fuente_max_age_seconds
+	object.get(input.exception, ["source_status"], null) == "STALE"
+	is_number(object.get(input.exception, ["source_max_age_seconds"], null))
+	_exception_age_seconds <= input.exception.source_max_age_seconds
 }
 
-# Lista ordenada y estable para el output.
+# Sorted, stable list for the output.
 validation_errors := sort([e | some e in _verr])
 
 input_valid if count(_verr) == 0
 
 # -----------------------------------------------------------------------------
-# Lógica de negocio (solo se evalúa sobre input válido)
+# Business logic (only evaluated over valid input)
 # -----------------------------------------------------------------------------
 
-source_available if input.resource.asignacion_status != "UNAVAILABLE"
+source_available if input.resource.assignment_status != "UNAVAILABLE"
 
-# La acción solicitada debe estar en la lista de acciones ya autorizadas por el
-# sistema corporativo (dato confiable del PEP). La política no calcula permisos.
-action_allowed if input.action in input.actor.acciones_permitidas
+# The requested action must be in the list of actions already authorised by the
+# corporate system (trusted PEP data). The policy does not compute permissions.
+action_allowed if input.action in input.actor.allowed_actions
 
 unit_matches if {
-	input.resource.asignacion_status == "FRESH"
-	input.actor.unidad == input.resource.unidad_asignada
+	input.resource.assignment_status == "FRESH"
+	input.actor.unit == input.resource.assigned_unit
 }
 
-# Excepción que apunta al actor/expediente/acción correctos y dentro de ventana
-# (comparación por nanosegundos, robusta ante offsets horarios).
+# An exception pointing at the right actor/record/action and inside the window
+# (nanosecond comparison, robust against time offsets).
 exception_basically_applicable if {
 	_has_exception
-	input.excepcion.actor_id == input.actor.id
-	input.excepcion.expediente_id == input.resource.expediente_id
-	input.action in input.excepcion.acciones_autorizadas
+	input.exception.actor_id == input.actor.id
+	input.exception.record_id == input.resource.record_id
+	input.action in input.exception.authorised_actions
 	ns_now := _ns(input.now)
-	ns_desde := _ns(input.excepcion.vigente_desde)
-	ns_hasta := _ns(input.excepcion.vigente_hasta)
-	ns_now >= ns_desde
-	ns_now <= ns_hasta
+	ns_from := _ns(input.exception.valid_from)
+	ns_until := _ns(input.exception.valid_until)
+	ns_now >= ns_from
+	ns_now <= ns_until
 }
 
-# Requisito unificado: una excepción solo es válida si ELLA MISMA está FRESH,
-# con independencia de si la asignación está FRESH o STALE.
+# Unified requirement: an exception is only valid if IT IS ITSELF FRESH,
+# regardless of whether the assignment is FRESH or STALE.
 exception_valid if {
 	exception_basically_applicable
-	input.excepcion.fuente_status == "FRESH"
+	input.exception.source_status == "FRESH"
 }
 
 exception_applicable_and_valid if {
-	input.resource.asignacion_status in {"FRESH", "STALE"}
+	input.resource.assignment_status in {"FRESH", "STALE"}
 	exception_valid
 }
 
 # -----------------------------------------------------------------------------
-# outcome: decision + reason_code + execution_allowed SIEMPRE juntos.
-# Ramas mutuamente excluyentes por construcción; `default` garantiza definición.
+# outcome: decision + reason_code + execution_allowed ALWAYS together.
+# Mutually exclusive branches by construction; `default` guarantees definition.
 # -----------------------------------------------------------------------------
 
 default outcome := {
@@ -500,7 +506,7 @@ outcome := {
 	source_available
 	not unit_matches
 	not exception_applicable_and_valid
-	input.resource.asignacion_status == "FRESH"
+	input.resource.assignment_status == "FRESH"
 }
 
 outcome := {
@@ -513,34 +519,34 @@ outcome := {
 	source_available
 	not unit_matches
 	not exception_applicable_and_valid
-	input.resource.asignacion_status == "STALE"
+	input.resource.assignment_status == "STALE"
 }
 
 # -----------------------------------------------------------------------------
-# Señales derivadas
+# Derived signals
 # -----------------------------------------------------------------------------
 
-# id de la excepción efectivamente aplicada (solo en ALLOW_WITH_EXCEPTION).
-default excepcion_id_aplicada := null
+# id of the exception actually applied (only in ALLOW_WITH_EXCEPTION).
+default applied_exception_id := null
 
-excepcion_id_aplicada := input.excepcion.id if {
+applied_exception_id := input.exception.id if {
 	outcome.decision == "ALLOW_WITH_EXCEPTION"
 }
 
-# Señal de auditoría: se permitió por coincidencia directa de unidad PERO
-# existía además una excepción básica aplicable al mismo actor/expediente/acción.
-default excepcion_existente_no_utilizada := false
+# Audit signal: access was allowed by direct unit match BUT an applicable
+# basic exception also existed for the same actor/record/action.
+default unused_exception_present := false
 
-excepcion_existente_no_utilizada if {
+unused_exception_present if {
 	outcome.decision == "ALLOW"
 	exception_basically_applicable
 }
 
 # -----------------------------------------------------------------------------
-# result: SIEMPRE definido. Los ecos de auditoría se SANEAN por tipo: se
-# refleja el valor del input solo si tiene el tipo contractual; si no, null.
-# Esto NO altera la decisión, el reason_code ni validation_errors: solo evita
-# arrastrar valores mal tipados (p. ej. actor_id numérico) a los metadatos.
+# result: ALWAYS defined. Audit echoes are SANITISED by type: the input
+# value is reflected only if it has the contractual type; otherwise null.
+# This does NOT change the decision, reason_code or validation_errors: it only
+# avoids dragging mistyped values (for example a numeric actor_id) into metadata.
 # -----------------------------------------------------------------------------
 
 default _echo_actor_id := null
@@ -553,14 +559,14 @@ _echo_actor_id := v if {
 default _echo_record_id := null
 
 _echo_record_id := v if {
-	v := object.get(_root, ["resource", "expediente_id"], null)
+	v := object.get(_root, ["resource", "record_id"], null)
 	is_string(v)
 }
 
 default _echo_assignment_status := null
 
 _echo_assignment_status := v if {
-	v := object.get(_root, ["resource", "asignacion_status"], null)
+	v := object.get(_root, ["resource", "assignment_status"], null)
 	v in valid_statuses
 }
 
@@ -572,12 +578,12 @@ _echo_evaluated_at := v if {
 }
 
 result := object.union(outcome, {
-	"regla": "RCI-EXP-001",
+	"rule": "RCI-EXP-001",
 	"actor_id": _echo_actor_id,
-	"expediente_id": _echo_record_id,
-	"asignacion_status": _echo_assignment_status,
-	"excepcion_id_aplicada": excepcion_id_aplicada,
-	"excepcion_existente_no_utilizada": excepcion_existente_no_utilizada,
+	"record_id": _echo_record_id,
+	"assignment_status": _echo_assignment_status,
+	"applied_exception_id": applied_exception_id,
+	"unused_exception_present": unused_exception_present,
 	"validation_errors": validation_errors,
 	"evaluated_at": _echo_evaluated_at,
 	"policy_version": policy_version,
