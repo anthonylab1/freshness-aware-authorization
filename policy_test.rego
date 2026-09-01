@@ -3,145 +3,145 @@ package rci.exp001_test
 import rego.v1
 
 # -----------------------------------------------------------------------------
-# Fixtures base — se sobreescriben campos puntuales con object.union anidado
-# para no perder el resto del recurso al hacer overrides parciales.
+# Base fixtures — individual fields are overridden with nested object.union
+# so partial overrides do not drop the rest of the resource.
 # -----------------------------------------------------------------------------
 
 base_input := {
-	"actor": {"id": "u-001", "unidad": "UNIDAD_A", "acciones_permitidas": ["leer", "modificar"]},
+	"actor": {"id": "u-001", "unit": "UNIDAD_A", "allowed_actions": ["leer", "modificar"]},
 	"action": "leer",
 	"resource": {
-		"expediente_id": "exp-123",
-		"unidad_asignada": "UNIDAD_A",
-		"asignacion_status": "FRESH",
-		"asignacion_timestamp": "2026-06-28T10:00:00Z",
-		"asignacion_max_age_seconds": 3600,
+		"record_id": "exp-123",
+		"assigned_unit": "UNIDAD_A",
+		"assignment_status": "FRESH",
+		"assignment_timestamp": "2026-06-28T10:00:00Z",
+		"assignment_max_age_seconds": 3600,
 	},
-	"excepcion": null,
+	"exception": null,
 	"now": "2026-06-28T10:15:00Z",
 }
 
-# Excepción válida (dentro de ventana, con fuente_status FRESH y su propia
-# frescura coherente: edad 15 min <= fuente_max_age 3600 s).
+# Valid exception (inside the window, with source_status FRESH and its own
+# coherent freshness: age 15 min <= source_max_age 3600 s).
 exception_valid := {
 	"id": "exc-777",
 	"actor_id": "u-001",
-	"expediente_id": "exp-123",
-	"acciones_autorizadas": ["leer"],
-	"vigente_desde": "2026-06-28T00:00:00Z",
-	"vigente_hasta": "2026-06-29T00:00:00Z",
-	"fuente_status": "FRESH",
-	"fuente_timestamp": "2026-06-28T10:00:00Z",
-	"fuente_max_age_seconds": 3600,
-	"aprobada_por": "responsable-x",
+	"record_id": "exp-123",
+	"authorised_actions": ["leer"],
+	"valid_from": "2026-06-28T00:00:00Z",
+	"valid_until": "2026-06-29T00:00:00Z",
+	"source_status": "FRESH",
+	"source_timestamp": "2026-06-28T10:00:00Z",
+	"source_max_age_seconds": 3600,
+	"approved_by": "responsable-x",
 }
 
-# Excepción con fuente STALE coherente: edad 75 min > fuente_max_age 3600 s.
-excepcion_stale := object.union(exception_valid, {
-	"fuente_status": "STALE",
-	"fuente_timestamp": "2026-06-28T09:00:00Z",
+# Exception with a coherent STALE source: age 75 min > source_max_age 3600 s.
+stale_exception := object.union(exception_valid, {
+	"source_status": "STALE",
+	"source_timestamp": "2026-06-28T09:00:00Z",
 })
 
-# Recurso STALE coherente: la edad (now - timestamp) supera el max_age, de modo
-# que STALE no contradice al timestamp y no dispara error de validación.
-resource_stale := object.union(base_input.resource, {
-	"asignacion_status": "STALE",
-	"asignacion_timestamp": "2026-06-28T09:00:00Z",
+# Coherent STALE resource: the age (now - timestamp) exceeds max_age, so that
+# STALE does not contradict the timestamp and raises no validation error.
+stale_resource := object.union(base_input.resource, {
+	"assignment_status": "STALE",
+	"assignment_timestamp": "2026-06-28T09:00:00Z",
 })
 
 # =============================================================================
-# 1. UNAVAILABLE -> DENY, sin importar nada más
+# 1. UNAVAILABLE -> DENY, regardless of anything else
 # =============================================================================
 
-test_unavailable_deny if {
-	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"asignacion_status": "UNAVAILABLE"})})
+test_unavailable_denies if {
+	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"assignment_status": "UNAVAILABLE"})})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_SOURCE_UNAVAILABLE"
 	r.execution_allowed == false
 }
 
-test_unavailable_deny_aunque_unidad_coincida if {
-	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"asignacion_status": "UNAVAILABLE", "unidad_asignada": "UNIDAD_A"})})
+test_unavailable_denies_even_when_unit_matches if {
+	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"assignment_status": "UNAVAILABLE", "assigned_unit": "UNIDAD_A"})})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 }
 
 # =============================================================================
-# 2. FRESH + unidad coincide -> ALLOW
+# 2. FRESH + unit matches -> ALLOW
 # =============================================================================
 
-test_fresh_unidad_coincide_allow if {
+test_fresh_unit_match_allows if {
 	r := data.rci.exp001.result with input as base_input
 	r.decision == "ALLOW"
 	r.reason_code == "RCI_ALLOW_UNIT_MATCH"
 	r.execution_allowed == true
-	r.excepcion_existente_no_utilizada == false
-	r.excepcion_id_aplicada == null
+	r.unused_exception_present == false
+	r.applied_exception_id == null
 }
 
-test_fresh_unidad_coincide_con_excepcion_aplicable_marca_no_utilizada if {
-	inp := object.union(base_input, {"excepcion": exception_valid})
+test_fresh_unit_match_with_applicable_exception_flags_unused if {
+	inp := object.union(base_input, {"exception": exception_valid})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ALLOW"
-	r.excepcion_existente_no_utilizada == true
-	r.excepcion_id_aplicada == null # ALLOW por unidad, la excepción NO se aplicó
+	r.unused_exception_present == true
+	r.applied_exception_id == null # ALLOW by unit; the exception was NOT applied
 }
 
-test_fresh_unidad_coincide_con_excepcion_de_otro_actor_no_marca if {
+test_fresh_unit_match_with_other_actor_exception_does_not_flag if {
 	otra := object.union(exception_valid, {"actor_id": "u-999"})
-	inp := object.union(base_input, {"excepcion": otra})
+	inp := object.union(base_input, {"exception": otra})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ALLOW"
-	r.excepcion_existente_no_utilizada == false
+	r.unused_exception_present == false
 }
 
 # =============================================================================
-# 3. FRESH + unidad NO coincide + excepción válida -> ALLOW_WITH_EXCEPTION
+# 3. FRESH + unit does NOT match + valid exception -> ALLOW_WITH_EXCEPTION
 # =============================================================================
 
-test_fresh_unidad_no_coincide_con_excepcion_valida_allow_with_exception if {
+test_fresh_unit_mismatch_with_valid_exception_allows_with_exception if {
 	inp := object.union(base_input, {
-		"actor": {"id": "u-001", "unidad": "UNIDAD_B"},
-		"excepcion": exception_valid,
+		"actor": {"id": "u-001", "unit": "UNIDAD_B"},
+		"exception": exception_valid,
 	})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ALLOW_WITH_EXCEPTION"
 	r.reason_code == "RCI_ALLOW_EXCEPTION_APPLIED"
 	r.execution_allowed == true
-	r.excepcion_id_aplicada == "exc-777"
+	r.applied_exception_id == "exc-777"
 }
 
-test_excepcion_fuera_de_ventana_no_aplica if {
+test_exception_outside_window_does_not_apply if {
 	vencida := object.union(exception_valid, {
-		"vigente_desde": "2026-01-01T00:00:00Z",
-		"vigente_hasta": "2026-01-02T00:00:00Z",
+		"valid_from": "2026-01-01T00:00:00Z",
+		"valid_until": "2026-01-02T00:00:00Z",
 	})
 	inp := object.union(base_input, {
-		"actor": {"id": "u-001", "unidad": "UNIDAD_B"},
-		"excepcion": vencida,
-	})
-	r := data.rci.exp001.result with input as inp
-	r.decision == "DENY"
-	r.reason_code == "RCI_DENY_UNIT_MISMATCH"
-}
-
-test_excepcion_no_cubre_la_accion_no_aplica if {
-	otra_accion := object.union(exception_valid, {"acciones_autorizadas": ["modificar"]})
-	inp := object.union(base_input, {
-		"actor": {"id": "u-001", "unidad": "UNIDAD_B"},
-		"excepcion": otra_accion,
+		"actor": {"id": "u-001", "unit": "UNIDAD_B"},
+		"exception": vencida,
 	})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_UNIT_MISMATCH"
 }
 
-test_excepcion_de_otro_expediente_no_aplica if {
-	otro_exp := object.union(exception_valid, {"expediente_id": "exp-OTRO"})
+test_exception_not_covering_action_does_not_apply if {
+	otra_accion := object.union(exception_valid, {"authorised_actions": ["modificar"]})
 	inp := object.union(base_input, {
-		"actor": {"id": "u-001", "unidad": "UNIDAD_B"},
-		"excepcion": otro_exp,
+		"actor": {"id": "u-001", "unit": "UNIDAD_B"},
+		"exception": otra_accion,
+	})
+	r := data.rci.exp001.result with input as inp
+	r.decision == "DENY"
+	r.reason_code == "RCI_DENY_UNIT_MISMATCH"
+}
+
+test_exception_for_other_record_does_not_apply if {
+	otro_exp := object.union(exception_valid, {"record_id": "exp-OTRO"})
+	inp := object.union(base_input, {
+		"actor": {"id": "u-001", "unit": "UNIDAD_B"},
+		"exception": otro_exp,
 	})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
@@ -149,22 +149,22 @@ test_excepcion_de_otro_expediente_no_aplica if {
 }
 
 # =============================================================================
-# 4. FRESH + unidad NO coincide + sin excepción válida -> DENY
+# 4. FRESH + unit does NOT match + no valid exception -> DENY
 # =============================================================================
 
-test_fresh_unidad_no_coincide_sin_excepcion_deny if {
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}})
+test_fresh_unit_mismatch_without_exception_denies if {
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_UNIT_MISMATCH"
 	r.execution_allowed == false
 }
 
-# Nuevo requisito: la excepción solo compensa si ELLA MISMA está FRESH.
-test_fresh_unidad_no_coincide_excepcion_stale_deny if {
+# New requirement: the exception only compensates if IT IS ITSELF FRESH.
+test_fresh_unit_mismatch_stale_exception_denies if {
 	inp := object.union(base_input, {
-		"actor": {"id": "u-001", "unidad": "UNIDAD_B"},
-		"excepcion": excepcion_stale,
+		"actor": {"id": "u-001", "unit": "UNIDAD_B"},
+		"exception": stale_exception,
 	})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
@@ -172,11 +172,11 @@ test_fresh_unidad_no_coincide_excepcion_stale_deny if {
 	r.execution_allowed == false
 }
 
-test_fresh_unidad_no_coincide_excepcion_unavailable_deny if {
-	exc_unavail := object.union(exception_valid, {"fuente_status": "UNAVAILABLE"})
+test_fresh_unit_mismatch_unavailable_exception_denies if {
+	exc_unavail := object.union(exception_valid, {"source_status": "UNAVAILABLE"})
 	inp := object.union(base_input, {
-		"actor": {"id": "u-001", "unidad": "UNIDAD_B"},
-		"excepcion": exc_unavail,
+		"actor": {"id": "u-001", "unit": "UNIDAD_B"},
+		"exception": exc_unavail,
 	})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
@@ -184,47 +184,47 @@ test_fresh_unidad_no_coincide_excepcion_unavailable_deny if {
 }
 
 # =============================================================================
-# 5. STALE + excepción válida y FRESH -> ALLOW_WITH_EXCEPTION
+# 5. STALE + valid and FRESH exception -> ALLOW_WITH_EXCEPTION
 # =============================================================================
 
-test_stale_con_excepcion_fresh_allow_with_exception if {
-	inp := object.union(base_input, {"resource": resource_stale, "excepcion": exception_valid})
+test_stale_with_fresh_exception_allows_with_exception if {
+	inp := object.union(base_input, {"resource": stale_resource, "exception": exception_valid})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ALLOW_WITH_EXCEPTION"
 	r.reason_code == "RCI_ALLOW_EXCEPTION_APPLIED"
 	r.execution_allowed == true
-	r.excepcion_id_aplicada == "exc-777"
+	r.applied_exception_id == "exc-777"
 }
 
 # =============================================================================
-# 6. STALE + excepción obsoleta / vencida -> ESCALATE (no compensa)
+# 6. STALE + stale / expired exception -> ESCALATE (does not compensate)
 # =============================================================================
 
-test_stale_con_excepcion_tambien_stale_no_compensa_escalate if {
-	inp := object.union(base_input, {"resource": resource_stale, "excepcion": excepcion_stale})
+test_stale_with_stale_exception_does_not_compensate_escalates if {
+	inp := object.union(base_input, {"resource": stale_resource, "exception": stale_exception})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ESCALATE"
 	r.reason_code == "RCI_ESCALATE_STALE_ASSIGNMENT"
 	r.execution_allowed == false
 }
 
-test_stale_con_excepcion_vencida_escalate if {
+test_stale_with_expired_exception_escalates if {
 	vencida := object.union(exception_valid, {
-		"vigente_desde": "2026-01-01T00:00:00Z",
-		"vigente_hasta": "2026-01-02T00:00:00Z",
+		"valid_from": "2026-01-01T00:00:00Z",
+		"valid_until": "2026-01-02T00:00:00Z",
 	})
-	inp := object.union(base_input, {"resource": resource_stale, "excepcion": vencida})
+	inp := object.union(base_input, {"resource": stale_resource, "exception": vencida})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ESCALATE"
 	r.reason_code == "RCI_ESCALATE_STALE_ASSIGNMENT"
 }
 
 # =============================================================================
-# 7. STALE sin excepción -> ESCALATE, operación retenida
+# 7. STALE without exception -> ESCALATE, operation held
 # =============================================================================
 
-test_stale_sin_excepcion_escalate_retenida if {
-	inp := object.union(base_input, {"resource": resource_stale})
+test_stale_without_exception_escalates_held if {
+	inp := object.union(base_input, {"resource": stale_resource})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ESCALATE"
 	r.reason_code == "RCI_ESCALATE_STALE_ASSIGNMENT"
@@ -232,21 +232,21 @@ test_stale_sin_excepcion_escalate_retenida if {
 }
 
 # =============================================================================
-# 8. Timestamps con offsets horarios (comparación por instante, no por string)
+# 8. Timestamps with time offsets (compared by instant, not by string)
 # =============================================================================
 
-# Ventana de excepción expresada en +02:00 que, comparada como string, dejaría
-# fuera a now=10:15Z; comparada como instante lo contiene. El timestamp de
-# asignación también viene con offset y es coherente con FRESH.
-test_offsets_horarios_ventana_allow_with_exception if {
+# Exception window expressed in +02:00 which, compared as a string, would leave
+# now=10:15Z outside; compared as an instant it contains it. The assignment
+# timestamp also carries an offset and is coherent with FRESH.
+test_time_offsets_in_window_allow_with_exception if {
 	exc := object.union(exception_valid, {
-		"vigente_desde": "2026-06-28T12:00:00+02:00", # == 10:00Z
-		"vigente_hasta": "2026-06-28T12:30:00+02:00", # == 10:30Z
+		"valid_from": "2026-06-28T12:00:00+02:00", # == 10:00Z
+		"valid_until": "2026-06-28T12:30:00+02:00", # == 10:30Z
 	})
 	inp := object.union(base_input, {
-		"actor": {"id": "u-001", "unidad": "UNIDAD_B"},
-		"resource": object.union(base_input.resource, {"asignacion_timestamp": "2026-06-28T12:00:00+02:00"}),
-		"excepcion": exc,
+		"actor": {"id": "u-001", "unit": "UNIDAD_B"},
+		"resource": object.union(base_input.resource, {"assignment_timestamp": "2026-06-28T12:00:00+02:00"}),
+		"exception": exc,
 	})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ALLOW_WITH_EXCEPTION"
@@ -254,37 +254,37 @@ test_offsets_horarios_ventana_allow_with_exception if {
 }
 
 # =============================================================================
-# 9. Límites exactos de vigencia (ventana inclusiva en ambos extremos)
+# 9. Exact validity bounds (window inclusive at both ends)
 # =============================================================================
 
-test_limite_exacto_vigente_desde_incluido if {
-	exc := object.union(exception_valid, {"vigente_desde": base_input.now})
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+test_exact_valid_from_bound_is_inclusive if {
+	exc := object.union(exception_valid, {"valid_from": base_input.now})
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ALLOW_WITH_EXCEPTION"
 }
 
-test_limite_exacto_vigente_hasta_incluido if {
-	exc := object.union(exception_valid, {"vigente_hasta": base_input.now})
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+test_exact_valid_until_bound_is_inclusive if {
+	exc := object.union(exception_valid, {"valid_until": base_input.now})
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ALLOW_WITH_EXCEPTION"
 }
 
-test_un_segundo_despues_de_vigente_hasta_deny if {
-	exc := object.union(exception_valid, {"vigente_hasta": "2026-06-28T10:14:59Z"})
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+test_one_second_after_valid_until_denies if {
+	exc := object.union(exception_valid, {"valid_until": "2026-06-28T10:14:59Z"})
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_UNIT_MISMATCH"
 }
 
 # =============================================================================
-# 10. Input inválido -> siempre result estructurado con RCI_DENY_INVALID_INPUT
+# 10. Invalid input -> always a structured result with RCI_DENY_INVALID_INPUT
 # =============================================================================
 
-test_estado_invalido_es_input_invalido if {
-	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"asignacion_status": "BOGUS"})})
+test_invalid_status_is_invalid_input if {
+	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"assignment_status": "BOGUS"})})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
@@ -292,14 +292,14 @@ test_estado_invalido_es_input_invalido if {
 	count(r.validation_errors) > 0
 }
 
-test_campo_ausente_actor_id_es_input_invalido if {
-	# object.union hace merge profundo, así que para OMITIR actor.id se construye
-	# el input de forma explícita (sin esa clave).
+test_missing_actor_id_is_invalid_input if {
+	# object.union does a deep merge, so to OMIT actor.id the input is built
+	# explicitly (without that key).
 	inp := {
-		"actor": {"unidad": "UNIDAD_A"},
+		"actor": {"unit": "UNIDAD_A"},
 		"action": "leer",
 		"resource": base_input.resource,
-		"excepcion": null,
+		"exception": null,
 		"now": base_input.now,
 	}
 	r := data.rci.exp001.result with input as inp
@@ -308,21 +308,21 @@ test_campo_ausente_actor_id_es_input_invalido if {
 	count(r.validation_errors) > 0
 }
 
-test_now_no_rfc3339_es_input_invalido if {
+test_now_not_rfc3339_is_invalid_input if {
 	inp := object.union(base_input, {"now": "no-es-una-fecha"})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_excepcion_con_timestamp_invalido_es_input_invalido if {
-	exc := object.union(exception_valid, {"vigente_hasta": "ayer"})
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+test_exception_with_invalid_timestamp_is_invalid_input if {
+	exc := object.union(exception_valid, {"valid_until": "ayer"})
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-# excepcion es obligatorio: la clave debe existir aunque valga null.
-test_excepcion_ausente_es_input_invalido if {
+# exception es obligatorio: la clave debe existir aunque valga null.
+test_missing_exception_key_is_invalid_input if {
 	inp := {
 		"actor": base_input.actor,
 		"action": base_input.action,
@@ -335,13 +335,13 @@ test_excepcion_ausente_es_input_invalido if {
 	count(r.validation_errors) > 0
 }
 
-# Un timestamp de asignación en el futuro no puede ser FRESH (sería ALLOW sin
-# esta validación, porque la unidad coincide).
-test_asignacion_timestamp_futuro_es_input_invalido if {
+# A future assignment timestamp cannot be FRESH (it would be ALLOW without
+# this validation, because the unit matches).
+test_future_assignment_timestamp_is_invalid_input if {
 	inp := object.union(base_input, {"resource": object.union(base_input.resource, {
-		"asignacion_status": "FRESH",
-		"asignacion_timestamp": "2026-06-28T11:00:00Z", # 45 min DESPUÉS de now
-		"asignacion_max_age_seconds": 3600,
+		"assignment_status": "FRESH",
+		"assignment_timestamp": "2026-06-28T11:00:00Z", # 45 min AFTER now
+		"assignment_max_age_seconds": 3600,
 	})})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
@@ -349,51 +349,51 @@ test_asignacion_timestamp_futuro_es_input_invalido if {
 	count(r.validation_errors) > 0
 }
 
-test_max_age_negativo_es_input_invalido if {
-	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"asignacion_max_age_seconds": -1})})
+test_negative_max_age_is_invalid_input if {
+	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"assignment_max_age_seconds": -1})})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	count(r.validation_errors) > 0
 }
 
-# Frescura de la excepción declarada FRESH pero contradicha por su timestamp:
-# edad 75 min > fuente_max_age 3600 s -> input inválido.
-test_contradiccion_frescura_excepcion_timestamp if {
-	exc := object.union(exception_valid, {"fuente_timestamp": "2026-06-28T09:00:00Z"})
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+# Exception freshness declared FRESH but contradicted by its timestamp:
+# age 75 min > source_max_age 3600 s -> invalid input.
+test_exception_freshness_contradicts_timestamp if {
+	exc := object.union(exception_valid, {"source_timestamp": "2026-06-28T09:00:00Z"})
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	count(r.validation_errors) > 0
 }
 
-# --- Endurecimiento 2.2.0 -----------------------------------------------------
+# --- Hardening 2.2.0 ----------------------------------------------------------
 
-# La raíz del input debe ser un objeto: null, string y array son inválidos, y el
-# result sigue definido (no aborta).
-test_raiz_null_es_input_invalido if {
+# The input root must be an object: null, string and array are invalid, and the
+# result stays defined (it does not abort).
+test_null_root_is_invalid_input if {
 	r := data.rci.exp001.result with input as null
 	is_object(r)
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	r.execution_allowed == false
 }
 
-test_raiz_string_es_input_invalido if {
+test_string_root_is_invalid_input if {
 	r := data.rci.exp001.result with input as "texto"
 	is_object(r)
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_raiz_array_es_input_invalido if {
+test_array_root_is_invalid_input if {
 	r := data.rci.exp001.result with input as [1, 2, 3]
 	is_object(r)
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-# Fecha con forma correcta pero imposible en el calendario (31 de febrero). No
-# debe abortar aunque se use --strict-builtin-errors.
-test_fecha_imposible_now_es_input_invalido if {
+# A date with correct shape but impossible in the calendar (31 February). It
+# must not abort even under --strict-builtin-errors.
+test_impossible_date_in_now_is_invalid_input if {
 	inp := object.union(base_input, {"now": "2026-02-31T10:15:00Z"})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
@@ -401,52 +401,52 @@ test_fecha_imposible_now_es_input_invalido if {
 	count(r.validation_errors) > 0
 }
 
-test_fecha_imposible_en_timestamp_asignacion if {
-	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"asignacion_timestamp": "2026-02-31T10:00:00Z"})})
+test_impossible_date_in_assignment_timestamp if {
+	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"assignment_timestamp": "2026-02-31T10:00:00Z"})})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_fecha_febrero_29_no_bisiesto_es_invalida if {
+test_february_29_non_leap_year_is_invalid if {
 	inp := object.union(base_input, {"now": "2025-02-29T10:15:00Z"})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-# Ventana de vigencia invertida.
-test_vigente_desde_posterior_a_hasta_es_invalido if {
+# Inverted validity window.
+test_valid_from_after_valid_until_is_invalid if {
 	exc := object.union(exception_valid, {
-		"vigente_desde": "2026-06-29T00:00:00Z",
-		"vigente_hasta": "2026-06-28T00:00:00Z",
+		"valid_from": "2026-06-29T00:00:00Z",
+		"valid_until": "2026-06-28T00:00:00Z",
 	})
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	count(r.validation_errors) > 0
 }
 
-# acciones_autorizadas debe ser array de strings NO vacíos.
-test_acciones_con_string_vacio_es_invalido if {
-	exc := object.union(exception_valid, {"acciones_autorizadas": ["leer", ""]})
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+# authorised_actions must be an array of NON-empty strings.
+test_actions_with_empty_string_is_invalid if {
+	exc := object.union(exception_valid, {"authorised_actions": ["leer", ""]})
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	count(r.validation_errors) > 0
 }
 
-test_acciones_con_elemento_no_string_es_invalido if {
-	exc := object.union(exception_valid, {"acciones_autorizadas": ["leer", 123]})
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+test_actions_with_non_string_element_is_invalid if {
+	exc := object.union(exception_valid, {"authorised_actions": ["leer", 123]})
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-# --- Endurecimiento 2.3.0: representabilidad de fechas y strings vacíos --------
+# --- Hardening 2.3.0: date representability and empty strings -----------------
 
-# Años fuera del rango representable como ns int64 por OPA -> input inválido, y
-# result SIEMPRE definido (no aborta ni con --strict-builtin-errors).
-test_anio_9999_no_representable_es_invalido if {
+# Years outside the range OPA can represent as int64 ns -> invalid input, and
+# result ALWAYS defined (it does not abort, not even under --strict-builtin-errors).
+test_year_9999_not_representable_is_invalid if {
 	inp := object.union(base_input, {"now": "9999-12-31T23:59:59Z"})
 	r := data.rci.exp001.result with input as inp
 	is_object(r)
@@ -455,86 +455,86 @@ test_anio_9999_no_representable_es_invalido if {
 	r.execution_allowed == false
 }
 
-test_anio_0000_no_representable_es_invalido if {
+test_year_0000_not_representable_is_invalid if {
 	inp := object.union(base_input, {"now": "0000-01-01T00:00:00Z"})
 	r := data.rci.exp001.result with input as inp
 	is_object(r)
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_asignacion_timestamp_anio_9999_es_invalido if {
-	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"asignacion_timestamp": "9999-01-01T00:00:00Z"})})
+test_assignment_timestamp_year_9999_is_invalid if {
+	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"assignment_timestamp": "9999-01-01T00:00:00Z"})})
 	r := data.rci.exp001.result with input as inp
 	is_object(r)
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-# Extremo representable (año 2261): sí se procesa con normalidad.
-test_anio_2261_representable_ok if {
+# Representable boundary (year 2261): processed normally.
+test_year_2261_is_representable if {
 	inp := object.union(base_input, {
 		"now": "2261-01-01T00:00:00Z",
-		"resource": object.union(base_input.resource, {"asignacion_timestamp": "2261-01-01T00:00:00Z"}),
+		"resource": object.union(base_input.resource, {"assignment_timestamp": "2261-01-01T00:00:00Z"}),
 	})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ALLOW"
 	r.reason_code == "RCI_ALLOW_UNIT_MATCH"
 }
 
-# Strings vacíos en campos obligatorios -> input inválido.
-test_actor_id_vacio_es_invalido if {
-	inp := object.union(base_input, {"actor": {"id": "", "unidad": "UNIDAD_A"}})
+# Empty strings in required fields -> invalid input.
+test_empty_actor_id_is_invalid if {
+	inp := object.union(base_input, {"actor": {"id": "", "unit": "UNIDAD_A"}})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_actor_unidad_vacia_es_invalido if {
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": ""}})
+test_empty_actor_unit_is_invalid if {
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": ""}})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_action_vacia_es_invalido if {
+test_empty_action_is_invalid if {
 	inp := object.union(base_input, {"action": ""})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_expediente_id_vacio_es_invalido if {
-	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"expediente_id": ""})})
+test_empty_record_id_is_invalid if {
+	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"record_id": ""})})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_unidad_asignada_vacia_es_invalido if {
-	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"unidad_asignada": ""})})
+test_empty_assigned_unit_is_invalid if {
+	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"assigned_unit": ""})})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_excepcion_id_vacio_es_invalido if {
+test_empty_exception_id_is_invalid if {
 	exc := object.union(exception_valid, {"id": ""})
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_excepcion_aprobada_por_vacia_es_invalido if {
-	exc := object.union(exception_valid, {"aprobada_por": ""})
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+test_empty_exception_approved_by_is_invalid if {
+	exc := object.union(exception_valid, {"approved_by": ""})
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
 # =============================================================================
-# 11. Coherencia status vs timestamp/max_age detectada por Rego
+# 11. Status vs timestamp/max_age consistency detected by Rego
 # =============================================================================
 
-test_status_fresh_incompatible_con_timestamp_maxage if {
-	# edad = 75 min = 4500 s > max_age 3600 s, pero status dice FRESH -> contradicción
+test_fresh_status_inconsistent_with_timestamp_and_max_age if {
+	# age = 75 min = 4500 s > max_age 3600 s, but status says FRESH -> contradiction
 	inp := object.union(base_input, {"resource": object.union(base_input.resource, {
-		"asignacion_status": "FRESH",
-		"asignacion_timestamp": "2026-06-28T09:00:00Z",
-		"asignacion_max_age_seconds": 3600,
+		"assignment_status": "FRESH",
+		"assignment_timestamp": "2026-06-28T09:00:00Z",
+		"assignment_max_age_seconds": 3600,
 	})})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
@@ -542,24 +542,24 @@ test_status_fresh_incompatible_con_timestamp_maxage if {
 	count(r.validation_errors) > 0
 }
 
-test_status_stale_incompatible_con_timestamp_maxage if {
-	# edad = 15 min = 900 s <= max_age 3600 s, pero status dice STALE -> contradicción
+test_stale_status_inconsistent_with_timestamp_and_max_age if {
+	# age = 15 min = 900 s <= max_age 3600 s, but status says STALE -> contradiction
 	inp := object.union(base_input, {"resource": object.union(base_input.resource, {
-		"asignacion_status": "STALE",
-		"asignacion_timestamp": "2026-06-28T10:00:00Z",
-		"asignacion_max_age_seconds": 3600,
+		"assignment_status": "STALE",
+		"assignment_timestamp": "2026-06-28T10:00:00Z",
+		"assignment_max_age_seconds": 3600,
 	})})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
 # =============================================================================
-# 12. result SIEMPRE definido (incluso con input vacío o basura)
+# 12. result ALWAYS defined (even with empty or garbage input)
 # =============================================================================
 
-test_resultado_siempre_definido_input_vacio if {
+test_result_always_defined_for_empty_input if {
 	r := data.rci.exp001.result with input as {}
-	is_object(r) # está definido
+	is_object(r) # it is defined
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	r.execution_allowed == false
@@ -567,188 +567,188 @@ test_resultado_siempre_definido_input_vacio if {
 }
 
 # =============================================================================
-# 13. Metadatos de trazabilidad siempre presentes
+# 13. Traceability metadata always present
 # =============================================================================
 
-test_resultado_incluye_metadatos_de_trazabilidad if {
+test_result_includes_traceability_metadata if {
 	r := data.rci.exp001.result with input as base_input
-	r.regla == "RCI-EXP-001"
-	r.policy_version == "3.0.0"
+	r.rule == "RCI-EXP-001"
+	r.policy_version == "4.0.0"
 	r.evaluated_at == base_input.now
 	r.actor_id == "u-001"
-	r.expediente_id == "exp-123"
-	r.asignacion_status == "FRESH"
+	r.record_id == "exp-123"
+	r.assignment_status == "FRESH"
 }
 
-# --- Saneado de auditoría 2.3.1: valores mal tipados -> null en los ecos, sin
-#     alterar decisión ni validation_errors --------------------------------------
+# --- Audit sanitisation 2.3.1: mistyped values -> null in the echoes, without
+#     changing the decision or validation_errors ------------------------------
 
-test_actor_id_no_string_se_sanea_a_null if {
-	inp := object.union(base_input, {"actor": {"id": 123, "unidad": "UNIDAD_A"}})
+test_non_string_actor_id_is_sanitised_to_null if {
+	inp := object.union(base_input, {"actor": {"id": 123, "unit": "UNIDAD_A"}})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	r.actor_id == null
 }
 
-test_expediente_id_no_string_se_sanea_a_null if {
-	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"expediente_id": 456})})
+test_non_string_record_id_is_sanitised_to_null if {
+	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"record_id": 456})})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
-	r.expediente_id == null
+	r.record_id == null
 }
 
-test_asignacion_status_invalido_se_sanea_a_null if {
-	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"asignacion_status": "BOGUS"})})
+test_invalid_assignment_status_is_sanitised_to_null if {
+	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"assignment_status": "BOGUS"})})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
-	r.asignacion_status == null
+	r.assignment_status == null
 }
 
-test_evaluated_at_no_string_se_sanea_a_null if {
+test_non_string_evaluated_at_is_sanitised_to_null if {
 	inp := object.union(base_input, {"now": 99999})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	r.evaluated_at == null
 }
 
-test_saneado_no_altera_validation_errors if {
-	inp := object.union(base_input, {"actor": {"id": 123, "unidad": "UNIDAD_A"}})
+test_sanitisation_does_not_change_validation_errors if {
+	inp := object.union(base_input, {"actor": {"id": 123, "unit": "UNIDAD_A"}})
 	r := data.rci.exp001.result with input as inp
 	count(r.validation_errors) > 0
 	r.decision == "DENY"
 	r.execution_allowed == false
 }
 
-# --- Cobertura adicional: casos de input inválido no cubiertos explícitamente ---
-# Todos deben: DENY / RCI_DENY_INVALID_INPUT / exec false / errores>0 / result
-# definido con todos los campos contractuales.
+# --- Additional coverage: invalid input cases not covered explicitly ----------
+# All must give: DENY / RCI_DENY_INVALID_INPUT / exec false / errors>0 / result
+# defined with every contractual field.
 
-_campos_obligatorios_presentes(r) if {
+_required_fields_present(r) if {
 	r.decision
 	r.reason_code
-	r.regla == "RCI-EXP-001"
-	r.policy_version == "3.0.0"
+	r.rule == "RCI-EXP-001"
+	r.policy_version == "4.0.0"
 
-	# claves presentes aunque su valor sea null/false/[]
+	# keys present even when their value is null/false/[]
 	object.get(r, "actor_id", "__NO__") != "__NO__"
-	object.get(r, "expediente_id", "__NO__") != "__NO__"
-	object.get(r, "asignacion_status", "__NO__") != "__NO__"
-	object.get(r, "excepcion_id_aplicada", "__NO__") != "__NO__"
-	object.get(r, "excepcion_existente_no_utilizada", "__NO__") != "__NO__"
+	object.get(r, "record_id", "__NO__") != "__NO__"
+	object.get(r, "assignment_status", "__NO__") != "__NO__"
+	object.get(r, "applied_exception_id", "__NO__") != "__NO__"
+	object.get(r, "unused_exception_present", "__NO__") != "__NO__"
 	object.get(r, "evaluated_at", "__NO__") != "__NO__"
 	is_boolean(r.execution_allowed)
 	is_array(r.validation_errors)
 }
 
-test_raiz_numerica_es_input_invalido if {
+test_numeric_root_is_invalid_input if {
 	r := data.rci.exp001.result with input as 42
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	r.execution_allowed == false
 	count(r.validation_errors) > 0
-	_campos_obligatorios_presentes(r)
+	_required_fields_present(r)
 }
 
-test_excepcion_fuente_timestamp_futuro_es_invalido if {
-	exc := object.union(exception_valid, {"fuente_timestamp": "2026-06-28T11:00:00Z"}) # 45 min > now
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+test_future_exception_source_timestamp_is_invalid if {
+	exc := object.union(exception_valid, {"source_timestamp": "2026-06-28T11:00:00Z"}) # 45 min > now
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	r.execution_allowed == false
 	count(r.validation_errors) > 0
-	_campos_obligatorios_presentes(r)
+	_required_fields_present(r)
 }
 
-test_excepcion_fuente_max_age_negativo_es_invalido if {
-	exc := object.union(exception_valid, {"fuente_max_age_seconds": -1})
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+test_negative_exception_source_max_age_is_invalid if {
+	exc := object.union(exception_valid, {"source_max_age_seconds": -1})
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	r.execution_allowed == false
 	count(r.validation_errors) > 0
-	_campos_obligatorios_presentes(r)
+	_required_fields_present(r)
 }
 
-# fuente_status=STALE pero la edad real (5 min) corresponde a FRESH -> incoherente.
-test_excepcion_fuente_stale_con_edad_fresh_es_invalido if {
+# source_status=STALE but the real age (5 min) corresponds to FRESH -> inconsistent.
+test_stale_exception_source_with_fresh_age_is_invalid if {
 	exc := object.union(exception_valid, {
-		"fuente_status": "STALE",
-		"fuente_timestamp": "2026-06-28T10:10:00Z",
+		"source_status": "STALE",
+		"source_timestamp": "2026-06-28T10:10:00Z",
 	})
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	r.execution_allowed == false
 	count(r.validation_errors) > 0
-	_campos_obligatorios_presentes(r)
+	_required_fields_present(r)
 }
 
-test_excepcion_acciones_no_array_es_invalido if {
-	exc := object.union(exception_valid, {"acciones_autorizadas": "leer"}) # string, no array
-	inp := object.union(base_input, {"actor": {"id": "u-001", "unidad": "UNIDAD_B"}, "excepcion": exc})
+test_exception_actions_not_an_array_is_invalid if {
+	exc := object.union(exception_valid, {"authorised_actions": "leer"}) # string, not an array
+	inp := object.union(base_input, {"actor": {"id": "u-001", "unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 	r.execution_allowed == false
 	count(r.validation_errors) > 0
-	_campos_obligatorios_presentes(r)
+	_required_fields_present(r)
 }
 
 # =============================================================================
-# 3.0.0 — Autorización por acción (actor.acciones_permitidas)
+# 3.0.0 — Per-action authorization (actor.allowed_actions)
 # =============================================================================
 
-# Excepción idéntica pero sin la clave `fuente_status` (para probar "ausente").
-excepcion_sin_fuente_status := {k: exception_valid[k] |
+# Identical exception but without the `source_status` key (to test "missing").
+exception_without_source_status := {k: exception_valid[k] |
 	some k in object.keys(exception_valid)
-	k != "fuente_status"
+	k != "source_status"
 }
 
-test_accion_permitida_unit_match_allow if {
+test_allowed_action_with_unit_match_allows if {
 	r := data.rci.exp001.result with input as base_input
 	r.decision == "ALLOW"
 	r.reason_code == "RCI_ALLOW_UNIT_MATCH"
 	r.execution_allowed == true
 }
 
-test_accion_no_permitida_deny if {
-	inp := object.union(base_input, {"actor": {"acciones_permitidas": ["modificar"]}}) # "leer" no está
+test_disallowed_action_denies if {
+	inp := object.union(base_input, {"actor": {"allowed_actions": ["modificar"]}}) # "leer" is not there
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_ACTION_NOT_ALLOWED"
 	r.execution_allowed == false
 }
 
-test_accion_permitida_via_excepcion_allow_with_exception if {
+test_allowed_action_via_exception_allows_with_exception if {
 	inp := object.union(base_input, {
-		"actor": {"unidad": "UNIDAD_B", "acciones_permitidas": ["leer"]},
-		"excepcion": exception_valid,
+		"actor": {"unit": "UNIDAD_B", "allowed_actions": ["leer"]},
+		"exception": exception_valid,
 	})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ALLOW_WITH_EXCEPTION"
 	r.reason_code == "RCI_ALLOW_EXCEPTION_APPLIED"
 }
 
-# Aunque la excepción autorice "leer", si no está en acciones_permitidas -> DENY acción.
-test_excepcion_no_puede_conceder_accion_no_permitida if {
+# Even if the exception authorises "leer", if it is not in allowed_actions -> action DENY.
+test_exception_cannot_grant_disallowed_action if {
 	inp := object.union(base_input, {
-		"actor": {"unidad": "UNIDAD_B", "acciones_permitidas": ["modificar"]},
-		"excepcion": exception_valid,
+		"actor": {"unit": "UNIDAD_B", "allowed_actions": ["modificar"]},
+		"exception": exception_valid,
 	})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_ACTION_NOT_ALLOWED"
 }
 
-test_acciones_permitidas_ausente_es_invalido if {
+test_missing_allowed_actions_is_invalid if {
 	inp := {
-		"actor": {"id": "u-001", "unidad": "UNIDAD_A"},
+		"actor": {"id": "u-001", "unit": "UNIDAD_A"},
 		"action": "leer",
 		"resource": base_input.resource,
-		"excepcion": null,
+		"exception": null,
 		"now": base_input.now,
 	}
 	r := data.rci.exp001.result with input as inp
@@ -756,91 +756,91 @@ test_acciones_permitidas_ausente_es_invalido if {
 	count(r.validation_errors) > 0
 }
 
-test_acciones_permitidas_no_array_es_invalido if {
-	inp := object.union(base_input, {"actor": {"acciones_permitidas": "leer"}})
+test_allowed_actions_not_an_array_is_invalid if {
+	inp := object.union(base_input, {"actor": {"allowed_actions": "leer"}})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_acciones_permitidas_elemento_no_string_es_invalido if {
-	inp := object.union(base_input, {"actor": {"acciones_permitidas": ["leer", 123]}})
+test_allowed_actions_non_string_element_is_invalid if {
+	inp := object.union(base_input, {"actor": {"allowed_actions": ["leer", 123]}})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_acciones_permitidas_elemento_vacio_es_invalido if {
-	inp := object.union(base_input, {"actor": {"acciones_permitidas": ["leer", ""]}})
+test_allowed_actions_empty_element_is_invalid if {
+	inp := object.union(base_input, {"actor": {"allowed_actions": ["leer", ""]}})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_acciones_permitidas_vacia_con_accion_solicitada_deny if {
-	inp := object.union(base_input, {"actor": {"acciones_permitidas": []}})
+test_empty_allowed_actions_denies_requested_action if {
+	inp := object.union(base_input, {"actor": {"allowed_actions": []}})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_ACTION_NOT_ALLOWED"
 }
 
-# UNAVAILABLE tiene prioridad sobre las excepciones (pero la acción va antes).
-test_unavailable_con_excepcion_fresh_sigue_source_unavailable if {
-	res := object.union(base_input.resource, {"asignacion_status": "UNAVAILABLE"})
-	inp := object.union(base_input, {"actor": {"unidad": "UNIDAD_B"}, "resource": res, "excepcion": exception_valid})
+# UNAVAILABLE takes precedence over exceptions (but the action check comes first).
+test_unavailable_with_fresh_exception_still_source_unavailable if {
+	res := object.union(base_input.resource, {"assignment_status": "UNAVAILABLE"})
+	inp := object.union(base_input, {"actor": {"unit": "UNIDAD_B"}, "resource": res, "exception": exception_valid})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "DENY"
 	r.reason_code == "RCI_DENY_SOURCE_UNAVAILABLE"
 }
 
-test_excepcion_como_string_es_invalido if {
-	inp := object.union(base_input, {"actor": {"unidad": "UNIDAD_B"}, "excepcion": "no-soy-objeto"})
+test_exception_as_string_is_invalid if {
+	inp := object.union(base_input, {"actor": {"unit": "UNIDAD_B"}, "exception": "no-soy-objeto"})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_excepcion_fuente_status_ausente_es_invalido if {
-	inp := object.union(base_input, {"actor": {"unidad": "UNIDAD_B"}, "excepcion": excepcion_sin_fuente_status})
+test_missing_exception_source_status_is_invalid if {
+	inp := object.union(base_input, {"actor": {"unit": "UNIDAD_B"}, "exception": exception_without_source_status})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_asignacion_max_age_no_numerico_es_invalido if {
-	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"asignacion_max_age_seconds": "3600"})})
+test_non_numeric_assignment_max_age_is_invalid if {
+	inp := object.union(base_input, {"resource": object.union(base_input.resource, {"assignment_max_age_seconds": "3600"})})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-test_excepcion_fuente_max_age_no_numerico_es_invalido if {
-	exc := object.union(exception_valid, {"fuente_max_age_seconds": "3600"})
-	inp := object.union(base_input, {"actor": {"unidad": "UNIDAD_B"}, "excepcion": exc})
+test_non_numeric_exception_source_max_age_is_invalid if {
+	exc := object.union(exception_valid, {"source_max_age_seconds": "3600"})
+	inp := object.union(base_input, {"actor": {"unit": "UNIDAD_B"}, "exception": exc})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-# max_age = 0: solo es FRESH una edad exactamente 0 (now == timestamp).
-test_max_age_cero_edad_cero_es_fresh_allow if {
-	res := object.union(base_input.resource, {"asignacion_max_age_seconds": 0, "asignacion_timestamp": base_input.now})
+# max_age = 0: only an age of exactly 0 is FRESH (now == timestamp).
+test_zero_max_age_with_zero_age_is_fresh_and_allows if {
+	res := object.union(base_input.resource, {"assignment_max_age_seconds": 0, "assignment_timestamp": base_input.now})
 	inp := object.union(base_input, {"resource": res})
 	r := data.rci.exp001.result with input as inp
 	r.decision == "ALLOW"
 	r.reason_code == "RCI_ALLOW_UNIT_MATCH"
 }
 
-test_max_age_cero_edad_positiva_fresh_es_incoherente if {
-	# status FRESH con edad 15 min pero max_age 0 -> contradicción -> inválido.
-	res := object.union(base_input.resource, {"asignacion_max_age_seconds": 0})
+test_zero_max_age_with_positive_age_fresh_is_inconsistent if {
+	# FRESH status with an age of 15 min but max_age 0 -> contradiction -> invalid.
+	res := object.union(base_input.resource, {"assignment_max_age_seconds": 0})
 	inp := object.union(base_input, {"resource": res})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-# Segundos intercalares :60 no admitidos por este contrato.
-test_segundo_60_en_now_es_invalido if {
+# Leap seconds :60 are not accepted by this contract.
+test_leap_second_in_now_is_invalid if {
 	inp := object.union(base_input, {"now": "2026-06-28T10:15:60Z"})
 	r := data.rci.exp001.result with input as inp
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-# Toda salida producida tiene una terna (decision, reason_code, execution_allowed) coherente.
-test_todas_las_ternas_coherentes if {
+# Every produced output has a coherent (decision, reason_code, execution_allowed) triple.
+test_all_decision_triples_are_coherent if {
 	combos := {
 		["ALLOW", "RCI_ALLOW_UNIT_MATCH", true],
 		["ALLOW_WITH_EXCEPTION", "RCI_ALLOW_EXCEPTION_APPLIED", true],
@@ -852,11 +852,11 @@ test_todas_las_ternas_coherentes if {
 	}
 	entradas := [
 		base_input,
-		object.union(base_input, {"actor": {"acciones_permitidas": ["modificar"]}}),
-		object.union(base_input, {"resource": object.union(base_input.resource, {"asignacion_status": "UNAVAILABLE"})}),
-		object.union(base_input, {"actor": {"unidad": "UNIDAD_B"}, "excepcion": exception_valid}),
-		object.union(base_input, {"actor": {"unidad": "UNIDAD_B"}}),
-		object.union(base_input, {"resource": resource_stale}),
+		object.union(base_input, {"actor": {"allowed_actions": ["modificar"]}}),
+		object.union(base_input, {"resource": object.union(base_input.resource, {"assignment_status": "UNAVAILABLE"})}),
+		object.union(base_input, {"actor": {"unit": "UNIDAD_B"}, "exception": exception_valid}),
+		object.union(base_input, {"actor": {"unit": "UNIDAD_B"}}),
+		object.union(base_input, {"resource": stale_resource}),
 		{},
 	]
 	every inp in entradas {
