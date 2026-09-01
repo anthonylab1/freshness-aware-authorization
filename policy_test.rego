@@ -321,7 +321,7 @@ test_exception_with_invalid_timestamp_is_invalid_input if {
 	r.reason_code == "RCI_DENY_INVALID_INPUT"
 }
 
-# exception es obligatorio: la clave debe existir aunque valga null.
+# exception is required: the key must exist even when its value is null.
 test_missing_exception_key_is_invalid_input if {
 	inp := {
 		"actor": base_input.actor,
